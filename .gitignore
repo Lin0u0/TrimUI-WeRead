@@ -1,0 +1,22 @@
+# Build artifacts
+build/
+dist/
+*.o
+*.a
+*.so
+*.so.*
+*.la
+
+# Generated SDK / toolchain dependencies
+third_party/tg5040/
+
+# Runtime state and secrets
+cookies.txt
+state/
+
+# macOS noise
+.DS_Store
+
+# Editor / tooling
+.idea/
+.vscode/

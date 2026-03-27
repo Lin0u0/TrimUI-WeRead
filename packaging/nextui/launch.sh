@@ -1,0 +1,18 @@
+#!/bin/sh
+PAK_DIR="$(dirname "$0")"
+PAK_NAME="$(basename "$PAK_DIR" .pak)"
+
+export HOME="$SHARED_USERDATA_PATH/$PAK_NAME"
+mkdir -p "$HOME"
+
+export PATH="$PAK_DIR/bin/$PLATFORM:$PAK_DIR/bin:$PATH"
+export LD_LIBRARY_PATH="$PAK_DIR/lib/$PLATFORM:$LD_LIBRARY_PATH"
+
+exec > "$LOGS_PATH/$PAK_NAME.txt" 2>&1
+
+chmod +x "$PAK_DIR/bin/$PLATFORM/"*
+
+weread \
+  --font "$PAK_DIR/res/fonts/SourceHanSerifSC-Regular.otf" \
+  --data "$HOME" \
+  --platform "$PLATFORM"
