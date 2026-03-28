@@ -67,14 +67,19 @@
 
 ## Verified Kindle Fields
 
-- These fields have been verified on Kindle simplified pages and should be preferred:
+- These fields have been verified on Kindle simplified pages:
 - Reader navigation/state:
   - `reader.readerUrlParams`
   - `reader.curChapterUrlParam`
   - `reader.prevChapterUrlParam`
   - `reader.nextChapterUrlParam`
   - `reader.prevChaptersWordCount`
-- Progress:
+- Current chapter / current page context:
+  - `reader.curChapter`
+  - `reader.curChapterUrlParam`
+  - `reader.chapterIndexes`
+  - `reader.chapterInfoCount`
+- Server-side last-known progress fallback:
   - `reader.progress.book.chapterUid`
   - `reader.progress.book.chapterIdx`
   - `reader.progress.book.chapterOffset`
@@ -84,10 +89,11 @@
   - `reader.bookInfo.bookId`
   - `reader.bookInfo.totalWords`
   - `reader.bookInfo.format`
-- Chapter metadata:
-  - `reader.curChapter`
-  - `reader.chapterIndexes`
-  - `reader.chapterInfoCount`
+
+- Important distinction:
+  - `reader.curChapter*` describes the chapter currently being viewed.
+  - `reader.progress.book.*` describes the server's last-known synced progress.
+  - These are not interchangeable and must not be conflated in progress reporting.
 
 ## Alias Resolution Rules
 
@@ -103,18 +109,19 @@
 
 ## Parsing Priority
 
-- For progress/reporting-critical metadata, prefer these sources in order:
-1. `reader.progress.book.*`
-2. `reader.readerUrlParams` and `reader.curChapterUrlParam/prevChapterUrlParam/nextChapterUrlParam`
-3. Resolved `reader.curChapter` object
-4. DOM fallbacks only for rendered content and offsets
+- For page rendering and progress-report payloads, prefer these sources in order:
+1. Resolved `reader.curChapter` object
+2. `reader.curChapterUrlParam` and current catalog/url-param mappings
+3. DOM-derived current-page offsets and current-page summary text
+4. `reader.progress.book.*` only as fallback when current chapter fields are absent
+5. DOM fallbacks only for rendered content and offsets
 
 - Concretely:
-  - `chapterUid`: prefer `reader.progress.book.chapterUid`
-  - `chapterIdx`: prefer `reader.progress.book.chapterIdx`
-  - `chapterOffset`: prefer `reader.progress.book.chapterOffset`
-  - `progress`: prefer `reader.progress.book.progress`
-  - `summary`: prefer `reader.progress.book.summary`
+  - `chapterUid`: prefer `reader.curChapter.chapterUid`; only fall back to `reader.progress.book.chapterUid` if current chapter data is missing
+  - `chapterIdx`: prefer `reader.curChapter.chapterIdx`; only fall back to `reader.progress.book.chapterIdx` if current chapter data is missing
+  - `chapterOffset`: prefer current-page offset samples (`wco`) or current-page derived offset; do not default to `reader.progress.book.chapterOffset`
+  - `progress`: compute from current reading position plus `reader.prevChaptersWordCount`; only fall back to server-known progress when the current position cannot be computed
+  - `summary`: prefer current-page text summary; only fall back to `reader.progress.book.summary` if no page summary is available
   - `prevChaptersWordCount`: use the verified `reader.prevChaptersWordCount`
 
 ## Chapter Navigation
@@ -136,8 +143,25 @@
 - `POST /wrwebsimplenjlogic/api/bookread` is the Kindle simplified progress-report endpoint.
 - The current implementation should stay aligned with Kindle payload semantics:
   - `b`, `c`, `ci`, `co`, `sm`, `pr`, `rt`, `ts`, `rn`, `tk`, `ct`
+- Official simplified-page JS reports the currently viewed chapter, not the stale server progress chapter:
+  - `c` / `ci` come from the current chapter (`reader.curChapter`)
+  - `co` comes from the current page offset within that chapter
+  - `sm` comes from current page text, capped to a short summary
+  - `pr` is recomputed from the current reading position when current-position data is available
+- `reader.progress.book.*` should be used for:
+  - initial cloud-progress sync / deciding whether to jump to another chapter on open
+  - fallback-only progress data when the current position cannot be computed
+  - fallback summary/offset data only when current-page data is unavailable
 - Prefer real content offsets from page `wco` samples over linear page guesses.
 - Prefer current-page summary text over stale chapter-entry summaries.
+- Mirror the simplified-page timing model:
+  - initial report with `rt=0` and existing server progress
+  - subsequent active-reading reports roughly every 30 seconds
+  - pause reading after about 120 seconds of inactivity
+- Mirror the simplified-page session behavior:
+  - `sessionTimeout` from `/api/bookread` means the login state is stale
+  - do not treat it as a normal transient post failure
+  - refresh session / re-enter login flow before expecting cloud progress sync to recover
 
 ## Things To Avoid
 
@@ -273,3 +297,100 @@ All chapter-specific fields (`chapterUid`, `chapterIdx`, `chapterOffset`, `progr
 - Keep TrimUI runtime libs sourced from the official SDK userland under `build/tg5040-sdk/sdk_usr/usr/lib`.
 - If `curl` is already present at `third_party/tg5040/curl`, the helper script should reuse it instead of rebuilding unnecessarily.
 - If a TrimUI package build starts using host `cc`/clang instead of `aarch64-linux-gnu-gcc`, treat that as a regression in the recursive `make` context.
+
+## Kindle Web Routing Notes
+
+- Verified with the project Kindle UA from `src/api.h` plus real WeRead cookies:
+  - `https://r.qq.com/` redirects to `https://weread.qq.com/`
+  - Kindle UA traffic is then routed to `https://weread.qq.com/wrwebsimplenjlogic/shelf`
+- Do not assume Kindle flows land on the modern `/web/...` Nuxt site.
+- Under Kindle UA, `/web/reader/...`, `/web/category/...`, and `/web/search/...` requests can be collapsed by the server back to the simplified `wrwebsimplenjlogic` entry flow.
+- For this project, treat `wrwebsimplenjlogic` as the canonical web surface for shelf/reader behavior.
+
+## Simplified Web Pages
+
+- Verified simplified routes:
+  - `/wrwebsimplenjlogic/shelf`
+  - `/wrwebsimplenjlogic/reader`
+  - `/wrwebsimplenjlogic/mpdetail`
+  - `/wrwebsimplenjlogic/buyreader`
+  - `/wrwebsimplenjlogic/login`
+  - `/wrwebsimplenjlogic/test`
+- The SSR router bundle also defines test mirrors:
+  - `/wrwebsimplenjlogic-test/shelf`
+  - `/wrwebsimplenjlogic-test/reader`
+  - `/wrwebsimplenjlogic-test/mpdetail`
+  - `/wrwebsimplenjlogic-test/buyreader`
+  - `/wrwebsimplenjlogic-test/login`
+- With a valid logged-in cookie set, `/wrwebsimplenjlogic/login` redirects back to `/wrwebsimplenjlogic/shelf`.
+
+## Simplified JS Asset Map
+
+- Shared on most simplified pages:
+  - `client/global.35483d.js`
+  - `client/cookie.0e551c.js`
+  - `static/es5-shim.min.js`
+- Page-specific chunks:
+  - `shelf` -> `client/shelf.fb74d4.js`
+  - `reader` -> `client/reader.4efb56.js` and `client/collect_html.5c9780.js`
+  - `mpdetail` -> `client/mpdetail.4304d7.js`
+  - `buyreader` -> `client/buyreader.1241ae.js`
+  - `test` -> no dedicated page chunk beyond shared assets
+- When debugging page behavior, start from these chunks instead of the newer `wrweb-next/_nuxt/*` assets.
+
+## Simplified JS Responsibilities
+
+- `global.35483d.js`
+  - Defines `window.k_utils`, `window.k_localStorage`, and `window.k_common`.
+  - Owns the shared XHR wrapper, client log reporting, KV reporting, and viewport zoom logic.
+  - All requests append `platform=desktop`.
+- `cookie.0e551c.js`
+  - Defines `window.cookie_utils` with simple `get/set/parse` helpers.
+  - Used by global viewport scaling logic such as `wr_scaleRatio`.
+- `shelf.fb74d4.js`
+  - Reads SSR `window.__NUXT__.state.shelf`.
+  - Renders shelf rows, handles prev/next paging, logout, and "buy reader" entry.
+  - Uses SSR `bookReaderUrls` to map `bookId -> bc param` before entering reader.
+  - `MP*` shelf entries first resolve `reviewId`, then jump to `mpdetail`.
+- `reader.4efb56.js`
+  - Implements the Kindle simplified reading UI: paging, catalog panel, note/bookmark UI, font size, shelf return, and buy-reader entry.
+  - Reads SSR `window.__NUXT__.state.reader` and uses query form `reader?bc=...&fs=...`.
+  - Reports reading progress to `/api/bookread`.
+  - Lazy-loads additional catalog segments from `/api/catalogloadmore`.
+- `collect_html.5c9780.js`
+  - Exposes `window.k_collect`.
+  - Traverses rendered reader DOM and converts it into content blocks, decoration layers, offsets, anchors, and selection metadata.
+  - This is the key helper behind simplified-page pagination and note-range behavior.
+- `mpdetail.4304d7.js`
+  - Implements simplified article/MP detail reading.
+  - Handles scroll paging, catalog, font size switching, image lazy loading, and reading-time reporting.
+  - Also reports progress to `/api/bookread`.
+- `buyreader.1241ae.js`
+  - Very small behavior layer; mainly turns body click into `history.back()`.
+
+## Simplified Navigation Rules
+
+- Shelf reader entry is not the desktop `/web/reader/<id>` route.
+- Shelf uses SSR `bookReaderUrls[*].param` and jumps to:
+  - `/wrwebsimplenjlogic/reader?bc=<param>&fs=<font_size>`
+- MP content jumps to:
+  - `/wrwebsimplenjlogic/mpdetail?reviewId=<id>&fs=<font_size>`
+- Reader font-size changes are implemented as full-page navigations back to:
+  - `/wrwebsimplenjlogic/reader?bc=<current_param>&fs=<new_size>`
+- When reproducing or debugging navigation, prefer these simplified URLs over newer `/web/...` routes.
+
+## Simplified API Notes
+
+- Shared infrastructure:
+  - `POST /wrwebsimplenjlogic/api/kvlog`
+  - `POST /wrwebsimplenjlogic/api/clog`
+- Shelf:
+  - `GET /wrwebsimplenjlogic/api/shelfloadmore`
+  - `GET /wrwebsimplenjlogic/api/reviewId`
+  - `GET /wrwebsimplenjlogic/api/logout`
+- Reader:
+  - `POST /wrwebsimplenjlogic/api/bookread`
+  - `GET /wrwebsimplenjlogic/api/catalogloadmore`
+- MP detail:
+  - `POST /wrwebsimplenjlogic/api/bookread`
+- Reader/reporting work should stay aligned with these simplified endpoints and payload semantics instead of inventing new web-only flows.

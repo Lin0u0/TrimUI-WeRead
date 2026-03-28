@@ -30,6 +30,7 @@ typedef struct {
     ReaderDocument doc;
     char source_target[2048];
     char **lines;
+    int *line_offsets;
     int line_count;
     int lines_per_page;
     int line_height;
@@ -44,6 +45,7 @@ typedef struct {
     int progress_initialized;
     int progress_paused;
     int progress_initial_report_pending;
+    int progress_session_expired;
 } ReaderViewState;
 
 typedef struct {
@@ -69,6 +71,7 @@ typedef struct {
     ReaderDocument doc;
     int current_page;
     int total_pages;
+    int chapter_offset;
     int reading_seconds;
     int compute_progress;
     char page_summary[128];
@@ -88,6 +91,9 @@ typedef struct {
     ShelfCoverEntry *entries;
     int count;
 } ShelfCoverCache;
+
+static int reader_total_pages(ReaderViewState *state);
+static int reader_find_page_for_offset(const ReaderViewState *state, int target_offset);
 
 static int ui_join_path_checked(char *dst, size_t dst_size, const char *dir, const char *name) {
     size_t dir_len;
@@ -362,13 +368,15 @@ static int progress_report_thread(void *userdata) {
         return -1;
     }
 
-    state->result = reader_report_progress(&ctx, &state->doc, state->current_page,
-                                           state->total_pages, state->reading_seconds,
-                                           state->page_summary, state->compute_progress);
+    state->result = reader_report_progress_at_offset(&ctx, &state->doc, state->current_page,
+                                                     state->total_pages, state->reading_seconds,
+                                                     state->page_summary, state->compute_progress,
+                                                     state->chapter_offset);
     if (state->result != 0) {
-        state->result = reader_report_progress(&ctx, &state->doc, state->current_page,
-                                               state->total_pages, state->reading_seconds,
-                                               state->page_summary, state->compute_progress);
+        state->result = reader_report_progress_at_offset(&ctx, &state->doc, state->current_page,
+                                                         state->total_pages, state->reading_seconds,
+                                                         state->page_summary, state->compute_progress,
+                                                         state->chapter_offset);
     }
     api_cleanup(&ctx);
     state->running = 0;
@@ -874,6 +882,7 @@ static void reader_view_free(ReaderViewState *state) {
         TTF_CloseFont(state->content_font);
     }
     free(state->lines);
+    free(state->line_offsets);
     reader_document_free(&state->doc);
     memset(state, 0, sizeof(*state));
 }
@@ -921,8 +930,9 @@ static int is_forbidden_line_start_punct(const char *text) {
     return 0;
 }
 
-static int append_line(ReaderViewState *state, const char *text, size_t len) {
+static int append_line(ReaderViewState *state, const char *text, size_t len, int start_offset) {
     char **tmp;
+    int *offsets_tmp;
     char *line;
 
     tmp = realloc(state->lines, sizeof(char *) * (state->line_count + 1));
@@ -930,6 +940,11 @@ static int append_line(ReaderViewState *state, const char *text, size_t len) {
         return -1;
     }
     state->lines = tmp;
+    offsets_tmp = realloc(state->line_offsets, sizeof(int) * (state->line_count + 1));
+    if (!offsets_tmp) {
+        return -1;
+    }
+    state->line_offsets = offsets_tmp;
     line = malloc(len + 1);
     if (!line) {
         return -1;
@@ -937,12 +952,15 @@ static int append_line(ReaderViewState *state, const char *text, size_t len) {
     memcpy(line, text, len);
     line[len] = '\0';
     state->lines[state->line_count++] = line;
+    state->line_offsets[state->line_count - 1] = start_offset;
     return 0;
 }
 
 static int append_blank_lines(ReaderViewState *state, int count) {
     for (int i = 0; i < count; i++) {
-        if (append_line(state, "", 0) != 0) {
+        int offset = state->line_count > 0 && state->line_offsets ?
+            state->line_offsets[state->line_count - 1] : 0;
+        if (append_line(state, "", 0, offset) != 0) {
             return -1;
         }
     }
@@ -955,20 +973,24 @@ static int wrap_paragraph(TTF_Font *font, const char *text, int max_width, Reade
     const char *p = text;
     const char *line_start = text;
     const char *last_break = NULL;
+    int char_offset = 0;
+    int line_start_offset = 0;
     while (*p) {
         int ch_len = utf8_char_len((unsigned char)*p);
         int next_width = 0;
         char saved[8] = {0};
 
         if (*p == '\n') {
-            if (append_line(state, line_start, (size_t)(p - line_start)) != 0) {
+            if (append_line(state, line_start, (size_t)(p - line_start), line_start_offset) != 0) {
                 return -1;
             }
             if (append_blank_lines(state, UI_READER_PARAGRAPH_GAP_LINES) != 0) {
                 return -1;
             }
             p++;
+            char_offset++;
             line_start = p;
+            line_start_offset = char_offset;
             last_break = NULL;
             continue;
         }
@@ -1005,23 +1027,26 @@ static int wrap_paragraph(TTF_Font *font, const char *text, int max_width, Reade
                 break_at = next_start + utf8_char_len((unsigned char)*next_start);
                 next_start = break_at;
             }
-            if (append_line(state, line_start, (size_t)(break_at - line_start)) != 0) {
+            if (append_line(state, line_start, (size_t)(break_at - line_start), line_start_offset) != 0) {
                 return -1;
             }
             p = next_start;
             while (*p && isspace((unsigned char)*p) && *p != '\n') {
                 p++;
+                char_offset++;
             }
             line_start = p;
+            line_start_offset = char_offset;
             last_break = NULL;
             continue;
         }
 
         p += ch_len;
+        char_offset++;
     }
 
     if (p > line_start) {
-        if (append_line(state, line_start, (size_t)(p - line_start)) != 0) {
+        if (append_line(state, line_start, (size_t)(p - line_start), line_start_offset) != 0) {
             return -1;
         }
     }
@@ -1057,18 +1082,8 @@ static int reader_view_load(ApiContext *ctx, TTF_Font *font, const char *target,
         state->lines_per_page = 1;
     }
     state->current_page = 0;
-    if (honor_saved_position && state->doc.saved_chapter_offset > 0 &&
-        state->doc.chapter_max_offset > 0) {
-        int total_pages = reader_total_pages(state);
-        int target_page = (int)(((long long)state->doc.saved_chapter_offset * total_pages) /
-                                (state->doc.chapter_max_offset + 1));
-        if (target_page < 0) {
-            target_page = 0;
-        }
-        if (target_page >= total_pages) {
-            target_page = total_pages - 1;
-        }
-        state->current_page = target_page;
+    if (honor_saved_position && state->doc.saved_chapter_offset > 0) {
+        state->current_page = reader_find_page_for_offset(state, state->doc.saved_chapter_offset);
     }
     reader_sync_catalog_selection(state);
     state->catalog_open = 0;
@@ -1081,6 +1096,56 @@ static int reader_total_pages(ReaderViewState *state) {
     }
     return state->line_count > 0 ?
         (state->line_count + state->lines_per_page - 1) / state->lines_per_page : 1;
+}
+
+static int reader_find_page_for_offset(const ReaderViewState *state, int target_offset) {
+    int total_pages;
+
+    if (!state || target_offset <= 0) {
+        return 0;
+    }
+
+    total_pages = reader_total_pages((ReaderViewState *)state);
+    if (total_pages <= 1) {
+        return 0;
+    }
+
+    if (state->line_offsets && state->line_count > 0) {
+        for (int page = 0; page < total_pages; page++) {
+            int start_line = page * state->lines_per_page;
+            if (start_line >= state->line_count) {
+                return total_pages - 1;
+            }
+            if (state->line_offsets[start_line] >= target_offset) {
+                return page;
+            }
+        }
+        return total_pages - 1;
+    }
+
+    for (int page = 0; page < total_pages; page++) {
+        int page_offset = reader_estimate_chapter_offset(&state->doc, page, total_pages);
+        if (page_offset >= target_offset) {
+            return page;
+        }
+    }
+
+    return total_pages - 1;
+}
+
+static int reader_current_page_offset(const ReaderViewState *state) {
+    int start_line;
+
+    if (!state) {
+        return 0;
+    }
+    start_line = state->current_page * state->lines_per_page;
+    if (state->line_offsets && start_line >= 0 && start_line < state->line_count) {
+        return state->line_offsets[start_line];
+    }
+    return reader_estimate_chapter_offset(&state->doc,
+                                          state->current_page,
+                                          reader_total_pages((ReaderViewState *)state));
 }
 
 static void reader_set_source_target(ReaderViewState *state, const char *source_target) {
@@ -1192,6 +1257,24 @@ static const char *reader_find_progress_target(const ReaderViewState *state) {
     return NULL;
 }
 
+static int reader_has_cloud_position(const ReaderDocument *doc) {
+    if (!doc) {
+        return 0;
+    }
+    if (doc->progress_chapter_idx > 0) {
+        return 1;
+    }
+    if (doc->progress_chapter_uid &&
+        doc->progress_chapter_uid[0] &&
+        strcmp(doc->progress_chapter_uid, "0") != 0) {
+        return 1;
+    }
+    if (doc->saved_chapter_offset > 0) {
+        return 1;
+    }
+    return 0;
+}
+
 static void reader_sync_catalog_selection(ReaderViewState *state) {
     int index;
 
@@ -1264,7 +1347,7 @@ static void reader_build_page_summary(ReaderViewState *state, char *out, size_t 
             memcpy(out + len, p, (size_t)ch_len);
             len += (size_t)ch_len;
             p += ch_len;
-            if (len >= 60) {
+            if (len >= 20) {
                 break;
             }
         }
@@ -1327,19 +1410,21 @@ static void reader_progress_note_activity(ReaderViewState *state, Uint32 now) {
     }
 }
 
-static void reader_progress_finalize_thread(ReaderViewState *state,
-                                            ProgressReportState *report_state,
-                                            SDL_Thread **report_thread) {
+static int reader_progress_finalize_thread(ReaderViewState *state,
+                                           ProgressReportState *report_state,
+                                           SDL_Thread **report_thread) {
     Uint32 now;
+    int result;
 
     if (!state || !report_state || !report_thread || !*report_thread || report_state->running) {
-        return;
+        return 0;
     }
 
     SDL_WaitThread(*report_thread, NULL);
     *report_thread = NULL;
+    result = report_state->result;
     now = SDL_GetTicks();
-    if (report_state->result == 0) {
+    if (result == READER_REPORT_OK) {
         state->progress_start_tick = now;
         if (!state->progress_paused) {
             state->progress_report_due_tick = now + UI_PROGRESS_REPORT_INTERVAL_MS;
@@ -1348,6 +1433,7 @@ static void reader_progress_finalize_thread(ReaderViewState *state,
         state->progress_report_due_tick = now + UI_PROGRESS_REPORT_INTERVAL_MS;
     }
     progress_report_state_reset(report_state);
+    return result;
 }
 
 static void reader_progress_queue_report(ApiContext *ctx, ReaderViewState *state,
@@ -1372,6 +1458,7 @@ static void reader_progress_queue_report(ApiContext *ctx, ReaderViewState *state
     }
     report_state->current_page = state->current_page;
     report_state->total_pages = reader_total_pages(state);
+    report_state->chapter_offset = reader_current_page_offset(state);
     report_state->reading_seconds = reading_seconds > 0 ? reading_seconds : 0;
     report_state->compute_progress = compute_progress;
     reader_build_page_summary(state, report_state->page_summary, sizeof(report_state->page_summary));
@@ -1382,16 +1469,51 @@ static void reader_progress_queue_report(ApiContext *ctx, ReaderViewState *state
     }
 }
 
-static void reader_progress_update(ApiContext *ctx, ReaderViewState *state,
-                                   ProgressReportState *report_state,
-                                   SDL_Thread **report_thread) {
+static void reader_progress_flush_blocking(ApiContext *ctx, ReaderViewState *state,
+                                          int compute_progress) {
+    Uint32 now;
+    Uint32 elapsed_ms;
+    int elapsed_seconds;
+    int rc;
+    char page_summary[128];
+
+    if (!ctx || !state || !state->doc.book_id || !state->doc.token || !state->doc.chapter_uid) {
+        return;
+    }
+
+    now = SDL_GetTicks();
+    reader_progress_note_activity(state, now);
+    elapsed_ms = state->progress_start_tick > 0 && now > state->progress_start_tick ?
+        (now - state->progress_start_tick) : 0;
+    elapsed_seconds = (int)(elapsed_ms / 1000);
+    if (elapsed_seconds < 0) {
+        elapsed_seconds = 0;
+    }
+    reader_build_page_summary(state, page_summary, sizeof(page_summary));
+    rc = reader_report_progress_at_offset(ctx, &state->doc, state->current_page,
+                                          reader_total_pages(state), elapsed_seconds,
+                                          page_summary, compute_progress,
+                                          reader_current_page_offset(state));
+    if (rc == READER_REPORT_OK) {
+        state->progress_start_tick = now;
+        if (!state->progress_paused) {
+            state->progress_report_due_tick = now + UI_PROGRESS_REPORT_INTERVAL_MS;
+        }
+    } else if (!state->progress_paused) {
+        state->progress_report_due_tick = now + UI_PROGRESS_REPORT_INTERVAL_MS;
+    }
+}
+
+static int reader_progress_update(ApiContext *ctx, ReaderViewState *state,
+                                  ProgressReportState *report_state,
+                                  SDL_Thread **report_thread) {
     Uint32 now;
     Uint32 elapsed_ms;
     int elapsed_seconds;
 
     if (!ctx || !state || !report_state || !report_thread ||
         !state->doc.book_id || !state->doc.token || !state->doc.chapter_uid) {
-        return;
+        return 0;
     }
 
     now = SDL_GetTicks();
@@ -1405,23 +1527,24 @@ static void reader_progress_update(ApiContext *ctx, ReaderViewState *state,
     }
 
     if (*report_thread || report_state->running || state->progress_paused) {
-        return;
+        return 0;
     }
 
     if (state->progress_initial_report_pending) {
         state->progress_initial_report_pending = 0;
         reader_progress_queue_report(ctx, state, report_state, report_thread, 0, 0);
-        return;
+        return 0;
     }
 
     if (state->progress_report_due_tick == 0 || now < state->progress_report_due_tick) {
-        return;
+        return 0;
     }
 
     elapsed_ms = state->progress_start_tick > 0 && now > state->progress_start_tick ?
         (now - state->progress_start_tick) : 0;
     elapsed_seconds = (int)(elapsed_ms / 1000);
     reader_progress_queue_report(ctx, state, report_state, report_thread, elapsed_seconds, 1);
+    return 0;
 }
 
 static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
@@ -1557,6 +1680,7 @@ static int reader_open_with_saved_position(ApiContext *ctx, TTF_Font *body_font,
     ReaderViewState saved_state = {0};
     int saved_page = 0;
     int has_local_position = 0;
+    int has_cloud_position = 0;
     int replace_with_saved_state = 0;
 
     if (book_id &&
@@ -1610,15 +1734,15 @@ static int reader_open_with_saved_position(ApiContext *ctx, TTF_Font *body_font,
         }
         free(fetched_target);
     }
+    has_cloud_position = reader_has_cloud_position(&reader_state->doc);
 
-    /* Local state may restore the page inside the same chapter, but it should
-       never override the chapter chosen by the current server state unless the
-       local chapter is at least as new as the cloud chapter. */
-    if (has_local_position &&
+    /* When cloud progress is available, keep it authoritative. Local state is
+       only used as a fallback when the server does not provide a position. */
+    if (!has_cloud_position && has_local_position &&
         reader_state->doc.target && strcmp(saved_target, reader_state->doc.target) == 0) {
         reader_state->current_page = saved_page;
         reader_clamp_current_page(reader_state);
-    } else if (has_local_position &&
+    } else if (!has_cloud_position && has_local_position &&
                reader_view_load(ctx, body_font, saved_target, font_size,
                                 UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 0,
                                 &saved_state) == 0) {
@@ -1848,6 +1972,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         if (reader_state.catalog_open) {
                             reader_state.catalog_open = 0;
                         } else {
+                            reader_progress_flush_blocking(ctx, &reader_state, 1);
                             reader_save_local_position(ctx, &reader_state);
                             view = VIEW_SHELF;
                         }
@@ -1887,6 +2012,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                 {
                                     const char *pt = reader_find_progress_target(&reader_state);
                                     char *ft = NULL;
+                                    int has_cloud_position = 0;
                                     if (!pt && reader_state.doc.book_id &&
                                         (reader_state.doc.progress_chapter_idx > 0 ||
                                          (reader_state.doc.progress_chapter_uid &&
@@ -1908,21 +2034,23 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                                          1, &reader_state);
                                     }
                                     free(ft);
-                                }
-                                if (reader_state.doc.book_id &&
-                                    state_load_reader_position_by_book_id(
-                                        ctx, reader_state.doc.book_id,
-                                        saved_source_target, sizeof(saved_source_target),
-                                        saved_target, sizeof(saved_target),
-                                        &saved_font_size, &saved_page) == 0) {
-                                    reader_set_source_target(&reader_state, saved_source_target);
-                                    if (reader_state.doc.target &&
-                                        strcmp(saved_target, reader_state.doc.target) == 0) {
-                                        reader_state.current_page = saved_page;
-                                        reader_clamp_current_page(&reader_state);
+                                    has_cloud_position = reader_has_cloud_position(&reader_state.doc);
+                                    if (reader_state.doc.book_id &&
+                                        state_load_reader_position_by_book_id(
+                                            ctx, reader_state.doc.book_id,
+                                            saved_source_target, sizeof(saved_source_target),
+                                            saved_target, sizeof(saved_target),
+                                            &saved_font_size, &saved_page) == 0) {
+                                        reader_set_source_target(&reader_state, saved_source_target);
+                                        if (!has_cloud_position &&
+                                            reader_state.doc.target &&
+                                            strcmp(saved_target, reader_state.doc.target) == 0) {
+                                            reader_state.current_page = saved_page;
+                                            reader_clamp_current_page(&reader_state);
+                                        }
+                                    } else {
+                                        reader_set_source_target(&reader_state, source_target);
                                     }
-                                } else {
-                                    reader_set_source_target(&reader_state, source_target);
                                 }
                                 view = VIEW_READER;
                                 shelf_status[0] = '\0';
@@ -2017,6 +2145,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                             if (item->target && item->target[0]) {
                                 snprintf(source_target, sizeof(source_target), "%s",
                                          reader_state.source_target);
+                                reader_progress_flush_blocking(ctx, &reader_state, 1);
                                 if (reader_view_load(ctx, body_font, item->target, font_size,
                                                      UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 0,
                                                      &reader_state) == 0) {
@@ -2044,10 +2173,11 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         int font_size = reader_state.doc.font_size;
                         if (target) {
                             snprintf(source_target, sizeof(source_target), "%s", reader_state.source_target);
+                            reader_progress_flush_blocking(ctx, &reader_state, 1);
                             if (reader_view_load(ctx, body_font, target, font_size,
                                                  UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 0,
                                                  &reader_state) == 0) {
-                                reader_set_source_target(&reader_state, source_target);
+                                    reader_set_source_target(&reader_state, source_target);
                                 reader_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
                             } else {
@@ -2066,10 +2196,11 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         int font_size = reader_state.doc.font_size;
                         if (target) {
                             snprintf(source_target, sizeof(source_target), "%s", reader_state.source_target);
+                            reader_progress_flush_blocking(ctx, &reader_state, 1);
                             if (reader_view_load(ctx, body_font, target, font_size,
                                                  UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 0,
                                                  &reader_state) == 0) {
-                                reader_set_source_target(&reader_state, source_target);
+                                    reader_set_source_target(&reader_state, source_target);
                                 int new_total_pages = reader_total_pages(&reader_state);
                                 reader_state.current_page = new_total_pages > 0 ? new_total_pages - 1 : 0;
                                 reader_save_local_position(ctx, &reader_state);
@@ -2087,10 +2218,11 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         int font_size = reader_state.doc.font_size;
                         if (target) {
                             snprintf(source_target, sizeof(source_target), "%s", reader_state.source_target);
+                            reader_progress_flush_blocking(ctx, &reader_state, 1);
                             if (reader_view_load(ctx, body_font, target, font_size,
                                                  UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 0,
                                                  &reader_state) == 0) {
-                                reader_set_source_target(&reader_state, source_target);
+                                    reader_set_source_target(&reader_state, source_target);
                                 reader_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
                             } else {
@@ -2106,10 +2238,11 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         int font_size = reader_state.doc.font_size;
                         if (target) {
                             snprintf(source_target, sizeof(source_target), "%s", reader_state.source_target);
+                            reader_progress_flush_blocking(ctx, &reader_state, 1);
                             if (reader_view_load(ctx, body_font, target, font_size,
                                                  UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 0,
                                                  &reader_state) == 0) {
-                                reader_set_source_target(&reader_state, source_target);
+                                    reader_set_source_target(&reader_state, source_target);
                                 reader_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
                             } else {
@@ -2206,6 +2339,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
 
 cleanup:
     if (view == VIEW_READER) {
+        reader_progress_flush_blocking(ctx, &reader_state, 1);
         reader_save_local_position(ctx, &reader_state);
     }
     if (login_thread) {
