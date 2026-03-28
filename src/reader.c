@@ -72,6 +72,27 @@ static char *dup_or_null_reader(const char *s) {
     return s ? strdup(s) : NULL;
 }
 
+static int join_path_checked(char *dst, size_t dst_size, const char *dir, const char *name) {
+    size_t dir_len;
+    size_t name_len;
+
+    if (!dst || dst_size == 0 || !dir || !name) {
+        return -1;
+    }
+
+    dir_len = strlen(dir);
+    name_len = strlen(name);
+    if (dir_len + 1 + name_len + 1 > dst_size) {
+        dst[0] = '\0';
+        return -1;
+    }
+
+    memcpy(dst, dir, dir_len);
+    dst[dir_len] = '/';
+    memcpy(dst + dir_len + 1, name, name_len + 1);
+    return 0;
+}
+
 static const char *find_top_level_field(const char *slice_start, const char *slice_end,
                                         const char *field_marker) {
     const char *limit;
@@ -1925,7 +1946,9 @@ static int ensure_random_font(ApiContext *ctx, char *path, size_t path_size) {
     Buffer buf = {0};
     FILE *fp;
 
-    snprintf(path, path_size, "%s/fzys_reversed.ttf", ctx->data_dir);
+    if (join_path_checked(path, path_size, ctx->data_dir, "fzys_reversed.ttf") != 0) {
+        return -1;
+    }
     if (stat(path, &st) == 0 && st.st_size > 0) {
         return 0;
     }
@@ -2000,6 +2023,7 @@ void reader_document_free(ReaderDocument *doc) {
     free(doc->book_id);
     free(doc->token);
     free(doc->chapter_uid);
+    free(doc->progress_chapter_uid);
     free(doc->progress_summary);
     free(doc->book_title);
     free(doc->chapter_title);
@@ -2045,8 +2069,8 @@ int reader_load(ApiContext *ctx, const char *target, int font_size, ReaderDocume
         if (book_block) {
             const char *bb_end = book_block + strlen(book_block);
             doc->progress_summary = extract_resolved_from_slice(buf.data, book_block, bb_end, "summary:");
-            doc->chapter_uid = extract_resolved_from_slice(buf.data, book_block, bb_end, "chapterUid:");
-            doc->chapter_idx = extract_int_from_slice_resolved(buf.data, book_block, bb_end, "chapterIdx:", 0);
+            doc->progress_chapter_uid = extract_resolved_from_slice(buf.data, book_block, bb_end, "chapterUid:");
+            doc->progress_chapter_idx = extract_int_from_slice_resolved(buf.data, book_block, bb_end, "chapterIdx:", 0);
             doc->saved_chapter_offset = extract_int_from_slice_resolved(buf.data, book_block, bb_end, "chapterOffset:", 0);
             doc->last_reported_progress = extract_int_from_slice_resolved(buf.data, book_block, bb_end, "progress:", 0);
             free(book_block);
@@ -2076,34 +2100,92 @@ int reader_load(ApiContext *ctx, const char *target, int font_size, ReaderDocume
         if (cur_chapter_literal) {
             const char *cur_start = cur_chapter_literal;
             const char *cur_end = cur_chapter_literal + strlen(cur_chapter_literal);
-            if (!doc->chapter_uid || strcmp(doc->chapter_uid, "0") == 0) {
-                free(doc->chapter_uid);
-                doc->chapter_uid = extract_resolved_from_slice(buf.data, cur_start, cur_end, "chapterUid:");
-            }
-            if (doc->chapter_idx <= 0) {
-                chapter_idx_value = extract_resolved_from_slice(buf.data, cur_start, cur_end, "chapterIdx:");
-            }
+            free(doc->chapter_uid);
+            doc->chapter_uid = extract_resolved_from_slice(buf.data, cur_start, cur_end, "chapterUid:");
+            chapter_idx_value = extract_resolved_from_slice(buf.data, cur_start, cur_end, "chapterIdx:");
             chapter_word_count_value =
                 extract_resolved_from_slice(buf.data, cur_start, cur_end, "wordCount:");
             free(cur_chapter_literal);
         }
-        if (doc->chapter_idx <= 0 && chapter_idx_value) {
+        if (chapter_idx_value) {
             doc->chapter_idx = atoi(chapter_idx_value);
         }
         if (chapter_word_count_value) {
             doc->chapter_word_count = atoi(chapter_word_count_value);
         }
     }
+    if ((!doc->chapter_uid || strcmp(doc->chapter_uid, "0") == 0) && doc->progress_chapter_uid) {
+        free(doc->chapter_uid);
+        doc->chapter_uid = dup_or_null_reader(doc->progress_chapter_uid);
+    }
+    if (doc->chapter_idx <= 0 && doc->progress_chapter_idx > 0) {
+        doc->chapter_idx = doc->progress_chapter_idx;
+    }
 
     if (reader_block_start && reader_block_end) {
         parse_reader_catalog(buf.data, reader_block_start, reader_block_end,
                              &doc->catalog_items, &doc->catalog_count);
     }
-    if (doc->catalog_total_count > 0 && doc->catalog_count > 0 &&
-        doc->catalog_count < doc->catalog_total_count) {
-        reader_hydrate_full_catalog(ctx, doc);
+    /* When curChapter is empty (Kindle-simplified SSR), chapter_uid/chapter_idx
+     * came from the progress fallback which reflects the SERVER's last known
+     * progress, not the chapter being viewed right now.  Fix this by looking up
+     * the actual chapter in the catalog using the target URL. */
+    {
+        const char *lookup_target = doc->target ? doc->target : target;
+        int found_in_catalog = 0;
+        if (lookup_target && doc->catalog_items && doc->catalog_count > 0) {
+            for (int i = 0; i < doc->catalog_count; i++) {
+                if (doc->catalog_items[i].target &&
+                    strcmp(doc->catalog_items[i].target, lookup_target) == 0) {
+                    if (doc->catalog_items[i].chapter_uid) {
+                        free(doc->chapter_uid);
+                        doc->chapter_uid = strdup(doc->catalog_items[i].chapter_uid);
+                    }
+                    if (doc->catalog_items[i].chapter_idx > 0) {
+                        doc->chapter_idx = doc->catalog_items[i].chapter_idx;
+                    }
+                    found_in_catalog = 1;
+                    break;
+                }
+            }
+        }
+        /* Fallback: chapter not in local catalog (non-contiguous range gap).
+         * Fetch a catalog chunk around the progress chapter index and search. */
+        if (!found_in_catalog && lookup_target && doc->book_id && doc->book_id[0] &&
+            doc->progress_chapter_idx > 0) {
+            ReaderCatalogItem *chunk = NULL;
+            int chunk_count = 0;
+            int first_idx = 0, last_idx = 0;
+            int range = doc->progress_chapter_idx > 40 ? doc->progress_chapter_idx - 40 : 0;
+            if (reader_fetch_catalog_chunk(ctx, doc->book_id, 2, range, range,
+                                           NULL, &chunk, &chunk_count,
+                                           &first_idx, &last_idx) == 0 && chunk_count > 0) {
+                for (int i = 0; i < chunk_count; i++) {
+                    if (!found_in_catalog && chunk[i].target &&
+                        strcmp(chunk[i].target, lookup_target) == 0) {
+                        if (chunk[i].chapter_uid) {
+                            free(doc->chapter_uid);
+                            doc->chapter_uid = strdup(chunk[i].chapter_uid);
+                        }
+                        if (chunk[i].chapter_idx > 0) {
+                            doc->chapter_idx = chunk[i].chapter_idx;
+                        }
+                        found_in_catalog = 1;
+                    }
+                    free(chunk[i].chapter_uid);
+                    free(chunk[i].target);
+                    free(chunk[i].title);
+                }
+                free(chunk);
+            }
+        }
     }
-
+    fprintf(stderr, "reader_load: target=%s chapter_uid=%s chapter_idx=%d (progress_uid=%s progress_idx=%d)\n",
+            doc->target ? doc->target : target,
+            doc->chapter_uid ? doc->chapter_uid : "(null)",
+            doc->chapter_idx,
+            doc->progress_chapter_uid ? doc->progress_chapter_uid : "(null)",
+            doc->progress_chapter_idx);
     content_html_fallback = extract_obfuscated_content_html(buf.data);
     if (!content_html_fallback || !*content_html_fallback) {
         fprintf(stderr, "Kindle simplified reader content not found in page DOM.\n");
@@ -2144,8 +2226,120 @@ cleanup:
     return rc;
 }
 
+int reader_ensure_full_catalog(ApiContext *ctx, ReaderDocument *doc) {
+    if (!doc) {
+        return -1;
+    }
+    if (doc->catalog_total_count <= 0 || doc->catalog_count <= 0 ||
+        doc->catalog_count >= doc->catalog_total_count) {
+        return 0;
+    }
+    return reader_hydrate_full_catalog(ctx, doc);
+}
+
+int reader_expand_catalog(ApiContext *ctx, ReaderDocument *doc, int direction, int *added_count) {
+    ReaderCatalogItem *chunk = NULL;
+    int chunk_count = 0;
+    int cap = 0;
+    int first_idx = 0;
+    int last_idx = 0;
+    int before_count;
+
+    if (added_count) {
+        *added_count = 0;
+    }
+    if (!ctx || !doc || !doc->book_id || !doc->catalog_items || doc->catalog_count <= 0 ||
+        doc->catalog_total_count <= 0) {
+        return -1;
+    }
+
+    before_count = doc->catalog_count;
+    cap = doc->catalog_count;
+    first_idx = doc->catalog_items[0].chapter_idx;
+    last_idx = doc->catalog_items[doc->catalog_count - 1].chapter_idx;
+
+    if (direction < 0) {
+        if (first_idx <= 1) {
+            return 0;
+        }
+        if (reader_fetch_catalog_chunk(ctx, doc->book_id, 1, first_idx, last_idx,
+                                       doc->chapter_uid, &chunk, &chunk_count,
+                                       &first_idx, &last_idx) != 0 || chunk_count <= 0) {
+            return -1;
+        }
+    } else if (direction > 0) {
+        if (last_idx >= doc->catalog_total_count) {
+            return 0;
+        }
+        if (reader_fetch_catalog_chunk(ctx, doc->book_id, 2, first_idx, last_idx,
+                                       doc->chapter_uid, &chunk, &chunk_count,
+                                       &first_idx, &last_idx) != 0 || chunk_count <= 0) {
+            return -1;
+        }
+    } else {
+        return -1;
+    }
+
+    for (int i = 0; i < chunk_count; i++) {
+        if (reader_catalog_merge_item(&doc->catalog_items, &doc->catalog_count, &cap, &chunk[i]) != 0) {
+            reader_catalog_items_free(chunk, chunk_count);
+            return -1;
+        }
+        free(chunk[i].chapter_uid);
+        free(chunk[i].target);
+        free(chunk[i].title);
+    }
+    free(chunk);
+    qsort(doc->catalog_items, (size_t)doc->catalog_count, sizeof(*doc->catalog_items),
+          catalog_item_cmp_chapter_idx);
+    if (added_count) {
+        *added_count = doc->catalog_count - before_count;
+    }
+    return 0;
+}
+
+char *reader_find_chapter_target(ApiContext *ctx, const char *book_id,
+                                const char *chapter_uid, int chapter_idx) {
+    ReaderCatalogItem *chunk = NULL;
+    int chunk_count = 0;
+    int first_idx = 0;
+    int last_idx = 0;
+    char *result = NULL;
+    int range;
+
+    if (!ctx || !book_id || !*book_id || (chapter_idx <= 0 && (!chapter_uid || !*chapter_uid))) {
+        return NULL;
+    }
+    /* Use chapter_idx as the center of the range to fetch. Ask for a small
+       window around it so the API returns the chunk that contains it. */
+    range = chapter_idx > 20 ? chapter_idx - 20 : 0;
+    if (reader_fetch_catalog_chunk(ctx, book_id, 2, range, range,
+                                   NULL, &chunk, &chunk_count,
+                                   &first_idx, &last_idx) != 0 || chunk_count <= 0) {
+        return NULL;
+    }
+    for (int i = 0; i < chunk_count; i++) {
+        if (!result) {
+            if (chapter_uid && chapter_uid[0] && strcmp(chapter_uid, "0") != 0 &&
+                chunk[i].chapter_uid && strcmp(chunk[i].chapter_uid, chapter_uid) == 0 &&
+                chunk[i].target) {
+                result = strdup(chunk[i].target);
+            } else if (chapter_idx > 0 && chunk[i].chapter_idx == chapter_idx &&
+                       chunk[i].target) {
+                result = strdup(chunk[i].target);
+            }
+        }
+        free(chunk[i].chapter_uid);
+        free(chunk[i].target);
+        free(chunk[i].title);
+    }
+    free(chunk);
+    return result;
+}
+
 int reader_report_progress(ApiContext *ctx, const ReaderDocument *doc, int current_page,
-                           int total_pages, int reading_seconds, const char *page_summary) {
+                           int total_pages, int reading_seconds, const char *page_summary,
+                           int compute_progress) {
     char *url;
     Buffer buf = {0};
     char *body = NULL;
@@ -2157,6 +2351,11 @@ int reader_report_progress(ApiContext *ctx, const ReaderDocument *doc, int curre
     int random_value = rand() % 1000;
 
     if (!ctx || !doc || !doc->book_id || !doc->token || !doc->chapter_uid || doc->chapter_idx <= 0) {
+        fprintf(stderr, "bookread skipped: book_id=%s token=%s chapter_uid=%s chapter_idx=%d\n",
+                doc ? (doc->book_id ? doc->book_id : "(null)") : "N/A",
+                doc ? (doc->token ? "(set)" : "(null)") : "N/A",
+                doc ? (doc->chapter_uid ? doc->chapter_uid : "(null)") : "N/A",
+                doc ? doc->chapter_idx : -1);
         return -1;
     }
 
@@ -2193,7 +2392,9 @@ int reader_report_progress(ApiContext *ctx, const ReaderDocument *doc, int curre
         offset = (int)(((long long)doc->chapter_max_offset * current_page) / total_pages_safe);
     }
 
-    if (doc->total_words > 0) {
+    if (!compute_progress) {
+        progress = doc->last_reported_progress;
+    } else if (doc->total_words > 0) {
         int chapter_progress_words = offset;
         if (doc->chapter_word_count > 0) {
             chapter_progress_words =
@@ -2211,14 +2412,8 @@ int reader_report_progress(ApiContext *ctx, const ReaderDocument *doc, int curre
         progress = doc->last_reported_progress;
     }
 
-    url = api_build_url(WEREAD_API_BASE_URL, "bookread");
-    if (!url) {
-        return -1;
-    }
-
     payload = cJSON_CreateObject();
     if (!payload) {
-        free(url);
         return -1;
     }
     cJSON_AddStringToObject(payload, "b", doc->book_id);
@@ -2238,24 +2433,62 @@ int reader_report_progress(ApiContext *ctx, const ReaderDocument *doc, int curre
     cJSON_Delete(payload);
     payload = NULL;
     if (!body) {
-        free(url);
         return -1;
     }
 
-    if (api_post(ctx, url, body, &buf) != 0) {
-        fprintf(stderr, "bookread POST failed (url=%s)\n", url);
+    /* Try the standard web API first, then fall back to the simplified path.
+     * The /wrwebsimplenjlogic/api/bookread endpoint returns sessionTimeout:1
+     * because the Kindle-simplified SSR backend does not support write operations. */
+    {
+        static const char *endpoints[] = {
+            "https://weread.qq.com/web/book/read",
+            WEREAD_API_BASE_URL "/bookread",
+        };
+        int i;
+        int posted = 0;
+
+        for (i = 0; i < 2 && !posted; i++) {
+            cJSON *resp_json;
+            url = strdup(endpoints[i]);
+            if (!url) {
+                break;
+            }
+
+            fprintf(stderr, "bookread POST url=%s body=%s\n", url, body);
+            if (api_post(ctx, url, body, &buf) != 0) {
+                fprintf(stderr, "bookread POST failed (url=%s)\n", url);
+                api_buffer_free(&buf);
+                free(url);
+                url = NULL;
+                continue;
+            }
+
+            fprintf(stderr, "bookread response (%d bytes): %.*s\n",
+                    (int)buf.size, (int)(buf.size < 500 ? buf.size : 500),
+                    buf.data ? buf.data : "(null)");
+
+            resp_json = buf.data ? cJSON_Parse(buf.data) : NULL;
+            if (resp_json) {
+                cJSON *timeout = cJSON_GetObjectItem(resp_json, "sessionTimeout");
+                if (timeout && cJSON_IsNumber(timeout) && timeout->valueint != 0) {
+                    fprintf(stderr, "bookread: sessionTimeout from %s, trying next endpoint\n", url);
+                    cJSON_Delete(resp_json);
+                    api_buffer_free(&buf);
+                    free(url);
+                    url = NULL;
+                    continue;
+                }
+                cJSON_Delete(resp_json);
+            }
+            posted = 1;
+            api_buffer_free(&buf);
+            free(url);
+            url = NULL;
+        }
+
         free(body);
-        free(url);
-        return -1;
+        return posted ? 0 : -1;
     }
-
-    if (buf.data && buf.size > 0) {
-        fprintf(stderr, "bookread response: %.*s\n", (int)(buf.size < 300 ? buf.size : 300), buf.data);
-    }
-    api_buffer_free(&buf);
-    free(body);
-    free(url);
-    return 0;
 }
 
 int reader_print(ApiContext *ctx, const char *target, int font_size) {

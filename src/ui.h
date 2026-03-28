@@ -3,7 +3,7 @@
 
 #include "api.h"
 
-int ui_run(ApiContext *ctx, const char *font_path);
+int ui_run(ApiContext *ctx, const char *font_path, const char *platform);
 int ui_is_available(void);
 
 #endif

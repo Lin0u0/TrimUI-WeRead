@@ -20,11 +20,13 @@ typedef struct {
     char *book_id;
     char *token;
     char *chapter_uid;
+    char *progress_chapter_uid;
     char *progress_summary;
     char *book_title;
     char *chapter_title;
     char *content_text;
     int chapter_idx;
+    int progress_chapter_idx;
     int total_words;
     int chapter_word_count;
     int prev_chapters_word_count;
@@ -44,8 +46,13 @@ typedef struct {
 } ReaderDocument;
 
 int reader_load(ApiContext *ctx, const char *target, int font_size, ReaderDocument *doc);
+int reader_ensure_full_catalog(ApiContext *ctx, ReaderDocument *doc);
+int reader_expand_catalog(ApiContext *ctx, ReaderDocument *doc, int direction, int *added_count);
 int reader_report_progress(ApiContext *ctx, const ReaderDocument *doc, int current_page,
-                           int total_pages, int reading_seconds, const char *page_summary);
+                           int total_pages, int reading_seconds, const char *page_summary,
+                           int compute_progress);
+char *reader_find_chapter_target(ApiContext *ctx, const char *book_id,
+                                const char *chapter_uid, int chapter_idx);
 void reader_document_free(ReaderDocument *doc);
 int reader_print(ApiContext *ctx, const char *target, int font_size);
 int reader_resume(ApiContext *ctx);

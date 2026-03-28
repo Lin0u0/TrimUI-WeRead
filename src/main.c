@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "api.h"
 #include "auth.h"
 #include "reader.h"
@@ -65,6 +66,8 @@ int main(int argc, char **argv) {
         used_default_command = 1;
     }
 
+    srand((unsigned int)time(NULL));
+
     if (api_init(&ctx, options.data_dir) != 0) {
         fprintf(stderr, "Failed to initialize API context\n");
         return 1;
@@ -127,7 +130,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "UI support unavailable in this build, falling back to shelf.\n");
             rc = shelf_print(&ctx) == 0 ? 0 : 1;
         } else {
-            rc = ui_run(&ctx, options.font_path) == 0 ? 0 : 1;
+            rc = ui_run(&ctx, options.font_path, options.platform) == 0 ? 0 : 1;
         }
     } else {
         usage(argv[0]);

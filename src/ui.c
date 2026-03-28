@@ -37,7 +37,13 @@ typedef struct {
     int catalog_open;
     int catalog_selected;
     TTF_Font *content_font;
-    Uint32 last_progress_tick;
+    Uint32 progress_start_tick;
+    Uint32 progress_pause_tick;
+    Uint32 progress_pause_deadline_tick;
+    Uint32 progress_report_due_tick;
+    int progress_initialized;
+    int progress_paused;
+    int progress_initial_report_pending;
 } ReaderViewState;
 
 typedef struct {
@@ -64,6 +70,7 @@ typedef struct {
     int current_page;
     int total_pages;
     int reading_seconds;
+    int compute_progress;
     char page_summary[128];
     int running;
     int result;
@@ -82,18 +89,152 @@ typedef struct {
     int count;
 } ShelfCoverCache;
 
+static int ui_join_path_checked(char *dst, size_t dst_size, const char *dir, const char *name) {
+    size_t dir_len;
+    size_t name_len;
+
+    if (!dst || dst_size == 0 || !dir || !name) {
+        return -1;
+    }
+
+    dir_len = strlen(dir);
+    name_len = strlen(name);
+    if (dir_len + 1 + name_len + 1 > dst_size) {
+        dst[0] = '\0';
+        return -1;
+    }
+
+    memcpy(dst, dir, dir_len);
+    dst[dir_len] = '/';
+    memcpy(dst + dir_len + 1, name, name_len + 1);
+    return 0;
+}
+
 enum {
     UI_TITLE_FONT_SIZE = 36,
     UI_BODY_FONT_SIZE = 28,
     UI_READER_CONTENT_FONT_SIZE = 28,
     UI_READER_EXTRA_LEADING = 6,
-    UI_READER_PARAGRAPH_GAP_LINES = 1,
+    UI_READER_PARAGRAPH_GAP_LINES = 0,
     UI_READER_CONTENT_WIDTH = 912,
     UI_READER_CONTENT_HEIGHT = 640,
-    UI_SHELF_COVER_TEXTURE_KEEP_RADIUS = 4
+    UI_SHELF_COVER_TEXTURE_KEEP_RADIUS = 4,
+    UI_PROGRESS_REPORT_INTERVAL_MS = 30000,
+    UI_PROGRESS_PAUSE_TIMEOUT_MS = 120000
 };
 
 static void reader_sync_catalog_selection(ReaderViewState *state);
+static void reader_open_catalog(ApiContext *ctx, ReaderViewState *state, char *status, size_t status_size);
+static int reader_expand_catalog_for_selection(ApiContext *ctx, ReaderViewState *state,
+                                               int direction, char *status, size_t status_size);
+
+enum {
+    TG5040_JOY_B = 0,
+    TG5040_JOY_A = 1,
+    TG5040_JOY_Y = 2,
+    TG5040_JOY_X = 3,
+    TG5040_JOY_L1 = 4,
+    TG5040_JOY_R1 = 5,
+    TG5040_JOY_SELECT = 6,
+    TG5040_JOY_START = 7,
+    TG5040_JOY_MENU = 8
+};
+
+static int ui_is_tg5040_platform(const char *platform) {
+    return platform && strcmp(platform, "tg5040") == 0;
+}
+
+static int ui_event_is_keydown(const SDL_Event *event, SDL_Keycode key) {
+    return event->type == SDL_KEYDOWN && event->key.keysym.sym == key;
+}
+
+static int ui_event_is_tg5040_button_down(const SDL_Event *event, int enabled, Uint8 button) {
+    return enabled && event->type == SDL_JOYBUTTONDOWN && event->jbutton.button == button;
+}
+
+static int ui_event_is_tg5040_axis(const SDL_Event *event, int enabled, Uint8 axis, int negative) {
+    const Sint16 threshold = 16000;
+
+    if (!enabled || event->type != SDL_JOYAXISMOTION || event->jaxis.axis != axis) {
+        return 0;
+    }
+    return negative ? event->jaxis.value <= -threshold : event->jaxis.value >= threshold;
+}
+
+static int ui_event_is_up(const SDL_Event *event, int tg5040_input) {
+    if (ui_event_is_keydown(event, SDLK_UP) || ui_event_is_keydown(event, SDLK_w)) {
+        return 1;
+    }
+    if (tg5040_input && event->type == SDL_JOYHATMOTION) {
+        return (event->jhat.value & SDL_HAT_UP) != 0;
+    }
+    return ui_event_is_tg5040_axis(event, tg5040_input, 1, 1);
+}
+
+static int ui_event_is_down(const SDL_Event *event, int tg5040_input) {
+    if (ui_event_is_keydown(event, SDLK_DOWN) || ui_event_is_keydown(event, SDLK_s)) {
+        return 1;
+    }
+    if (tg5040_input && event->type == SDL_JOYHATMOTION) {
+        return (event->jhat.value & SDL_HAT_DOWN) != 0;
+    }
+    return ui_event_is_tg5040_axis(event, tg5040_input, 1, 0);
+}
+
+static int ui_event_is_left(const SDL_Event *event, int tg5040_input) {
+    if (ui_event_is_keydown(event, SDLK_LEFT) || ui_event_is_keydown(event, SDLK_a)) {
+        return 1;
+    }
+    if (tg5040_input && event->type == SDL_JOYHATMOTION) {
+        return (event->jhat.value & SDL_HAT_LEFT) != 0;
+    }
+    return ui_event_is_tg5040_axis(event, tg5040_input, 0, 1);
+}
+
+static int ui_event_is_right(const SDL_Event *event, int tg5040_input) {
+    if (ui_event_is_keydown(event, SDLK_RIGHT) || ui_event_is_keydown(event, SDLK_d)) {
+        return 1;
+    }
+    if (tg5040_input && event->type == SDL_JOYHATMOTION) {
+        return (event->jhat.value & SDL_HAT_RIGHT) != 0;
+    }
+    return ui_event_is_tg5040_axis(event, tg5040_input, 0, 0);
+}
+
+static int ui_event_is_back(const SDL_Event *event, int tg5040_input) {
+    return ui_event_is_keydown(event, SDLK_ESCAPE) ||
+           ui_event_is_keydown(event, SDLK_b) ||
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_B) ||
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_MENU);
+}
+
+static int ui_event_is_confirm(const SDL_Event *event, int tg5040_input) {
+    return ui_event_is_keydown(event, SDLK_RETURN) ||
+           ui_event_is_keydown(event, SDLK_SPACE) ||
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_A);
+}
+
+static int ui_event_is_shelf_resume(const SDL_Event *event, int tg5040_input) {
+    return ui_event_is_keydown(event, SDLK_r) ||
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_X) ||
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_SELECT);
+}
+
+static int ui_event_is_catalog_toggle(const SDL_Event *event, int tg5040_input) {
+    return ui_event_is_keydown(event, SDLK_c) ||
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_X) ||
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_SELECT);
+}
+
+static int ui_event_is_chapter_prev(const SDL_Event *event, int tg5040_input) {
+    return ui_event_is_up(event, tg5040_input) ||
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_L1);
+}
+
+static int ui_event_is_chapter_next(const SDL_Event *event, int tg5040_input) {
+    return ui_event_is_down(event, tg5040_input) ||
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_R1);
+}
 
 static void reader_format_chapter_heading(const ReaderViewState *state, char *out, size_t out_size) {
     char prefix[64];
@@ -180,8 +321,10 @@ static int copy_reader_report_document(ReaderDocument *dst, const ReaderDocument
     dst->book_id = dup_or_null(src->book_id);
     dst->token = dup_or_null(src->token);
     dst->chapter_uid = dup_or_null(src->chapter_uid);
+    dst->progress_chapter_uid = dup_or_null(src->progress_chapter_uid);
     dst->progress_summary = dup_or_null(src->progress_summary);
     dst->chapter_idx = src->chapter_idx;
+    dst->progress_chapter_idx = src->progress_chapter_idx;
     dst->total_words = src->total_words;
     dst->chapter_word_count = src->chapter_word_count;
     dst->prev_chapters_word_count = src->prev_chapters_word_count;
@@ -201,6 +344,7 @@ static int copy_reader_report_document(ReaderDocument *dst, const ReaderDocument
     if ((src->book_id && !dst->book_id) ||
         (src->token && !dst->token) ||
         (src->chapter_uid && !dst->chapter_uid) ||
+        (src->progress_chapter_uid && !dst->progress_chapter_uid) ||
         (src->progress_summary && !dst->progress_summary)) {
         reader_document_free(dst);
         return -1;
@@ -220,7 +364,12 @@ static int progress_report_thread(void *userdata) {
 
     state->result = reader_report_progress(&ctx, &state->doc, state->current_page,
                                            state->total_pages, state->reading_seconds,
-                                           state->page_summary);
+                                           state->page_summary, state->compute_progress);
+    if (state->result != 0) {
+        state->result = reader_report_progress(&ctx, &state->doc, state->current_page,
+                                               state->total_pages, state->reading_seconds,
+                                               state->page_summary, state->compute_progress);
+    }
     api_cleanup(&ctx);
     state->running = 0;
     return state->result;
@@ -454,6 +603,7 @@ static int shelf_cover_prepare(ApiContext *ctx, SDL_Renderer *renderer, ShelfCov
 static void shelf_cover_cache_build(ApiContext *ctx, cJSON *nuxt, ShelfCoverCache *cache) {
     cJSON *books = shelf_books(nuxt);
     char covers_dir[1024];
+    char file_name[256];
     int count;
 
     shelf_cover_cache_reset(cache);
@@ -483,9 +633,18 @@ static void shelf_cover_cache_build(ApiContext *ctx, cJSON *nuxt, ShelfCoverCach
         entry->book_id = dup_or_null(book_id);
         entry->cover_url = dup_or_null(cover);
         if (book_id && *book_id) {
-            snprintf(entry->cache_path, sizeof(entry->cache_path), "%s/%s.img", covers_dir, book_id);
+            if (strlen(book_id) + strlen(".img") + 1 > sizeof(file_name) ||
+                snprintf(file_name, sizeof(file_name), "%s.img", book_id) < 0 ||
+                ui_join_path_checked(entry->cache_path, sizeof(entry->cache_path),
+                                     covers_dir, file_name) != 0) {
+                entry->cache_path[0] = '\0';
+            }
         } else {
-            snprintf(entry->cache_path, sizeof(entry->cache_path), "%s/book-%d.img", covers_dir, i);
+            if (snprintf(file_name, sizeof(file_name), "book-%d.img", i) < 0 ||
+                ui_join_path_checked(entry->cache_path, sizeof(entry->cache_path),
+                                     covers_dir, file_name) != 0) {
+                entry->cache_path[0] = '\0';
+            }
         }
     }
 }
@@ -727,6 +886,41 @@ static int utf8_char_len(unsigned char c) {
     return 1;
 }
 
+static int is_forbidden_line_start_punct(const char *text) {
+    static const char *tokens[] = {
+        ",", ".", "!", "?", ":", ";", ")", "]", "}", "%",
+        "\xE3\x80\x81", /* 、 */
+        "\xE3\x80\x82", /* 。 */
+        "\xEF\xBC\x8C", /* ， */
+        "\xEF\xBC\x8E", /* ． */
+        "\xEF\xBC\x81", /* ！ */
+        "\xEF\xBC\x9F", /* ？ */
+        "\xEF\xBC\x9A", /* ： */
+        "\xEF\xBC\x9B", /* ； */
+        "\xEF\xBC\x89", /* ） */
+        "\xE3\x80\x91", /* 】 */
+        "\xE3\x80\x8D", /* 」 */
+        "\xE3\x80\x8F", /* 』 */
+        "\xE2\x80\x99", /* ’ */
+        "\xE2\x80\x9D", /* ” */
+        "\xE3\x80\x8B", /* 》 */
+        "\xE3\x80\x89", /* 〉 */
+        "\xE3\x80\xBE", /* 〾/fallback uncommon but safe */
+        NULL
+    };
+
+    if (!text || !*text) {
+        return 0;
+    }
+    for (int i = 0; tokens[i]; i++) {
+        size_t len = strlen(tokens[i]);
+        if (strncmp(text, tokens[i], len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int append_line(ReaderViewState *state, const char *text, size_t len) {
     char **tmp;
     char *line;
@@ -799,13 +993,22 @@ static int wrap_paragraph(TTF_Font *font, const char *text, int max_width, Reade
 
         if (next_width > max_width && p > line_start) {
             const char *break_at = last_break && last_break > line_start ? last_break : p;
+            const char *next_start;
             while (break_at > line_start && isspace((unsigned char)break_at[-1])) {
                 break_at--;
+            }
+            next_start = last_break && last_break > line_start ? last_break + 1 : p;
+            while (*next_start && isspace((unsigned char)*next_start) && *next_start != '\n') {
+                next_start++;
+            }
+            if (is_forbidden_line_start_punct(next_start)) {
+                break_at = next_start + utf8_char_len((unsigned char)*next_start);
+                next_start = break_at;
             }
             if (append_line(state, line_start, (size_t)(break_at - line_start)) != 0) {
                 return -1;
             }
-            p = last_break && last_break > line_start ? last_break + 1 : p;
+            p = next_start;
             while (*p && isspace((unsigned char)*p) && *p != '\n') {
                 p++;
             }
@@ -869,7 +1072,6 @@ static int reader_view_load(ApiContext *ctx, TTF_Font *font, const char *target,
     }
     reader_sync_catalog_selection(state);
     state->catalog_open = 0;
-    state->last_progress_tick = SDL_GetTicks();
     return 0;
 }
 
@@ -958,32 +1160,32 @@ static int reader_is_catalog_item_current(const ReaderViewState *state, const Re
    currently loaded chapter (identified by is_current in the catalog), or NULL
    if the loaded chapter already matches the progress chapter. */
 static const char *reader_find_progress_target(const ReaderViewState *state) {
-    const char *current_uid = NULL;
     int i;
 
-    if ((!state->doc.chapter_uid && state->doc.chapter_idx <= 0) ||
+    if ((!state->doc.progress_chapter_uid && state->doc.progress_chapter_idx <= 0) ||
         !state->doc.catalog_items || state->doc.catalog_count <= 0) {
         return NULL;
     }
+    /* Find the progress chapter in the catalog and compare its target URL
+       against the actually loaded chapter URL (doc.target).  We avoid using
+       the is_current catalog flag because the server may set it based on the
+       cloud reading position rather than the chapter whose content was actually
+       rendered on the page. */
     for (i = 0; i < state->doc.catalog_count; i++) {
-        if (state->doc.catalog_items[i].is_current) {
-            current_uid = state->doc.catalog_items[i].chapter_uid;
-            break;
+        int matches_progress = 0;
+        if (state->doc.progress_chapter_uid &&
+            state->doc.catalog_items[i].chapter_uid &&
+            strcmp(state->doc.catalog_items[i].chapter_uid, state->doc.progress_chapter_uid) == 0) {
+            matches_progress = 1;
+        } else if (state->doc.progress_chapter_idx > 0 &&
+                   state->doc.catalog_items[i].chapter_idx == state->doc.progress_chapter_idx) {
+            matches_progress = 1;
         }
-    }
-    if (!current_uid) {
-        return NULL;
-    }
-    if (strcmp(current_uid, state->doc.chapter_uid) == 0) {
-        return NULL; /* already at the progress chapter */
-    }
-    for (i = 0; i < state->doc.catalog_count; i++) {
-        if (state->doc.catalog_items[i].chapter_uid &&
-            strcmp(state->doc.catalog_items[i].chapter_uid, state->doc.chapter_uid) == 0) {
-            return state->doc.catalog_items[i].target;
-        }
-        if (state->doc.chapter_idx > 0 &&
-            state->doc.catalog_items[i].chapter_idx == state->doc.chapter_idx) {
+        if (matches_progress) {
+            if (state->doc.target && state->doc.catalog_items[i].target &&
+                strcmp(state->doc.target, state->doc.catalog_items[i].target) == 0) {
+                return NULL; /* already at the progress chapter */
+            }
             return state->doc.catalog_items[i].target;
         }
     }
@@ -998,6 +1200,37 @@ static void reader_sync_catalog_selection(ReaderViewState *state) {
     }
     index = reader_current_catalog_index(state);
     state->catalog_selected = index >= 0 ? index : 0;
+}
+
+static void reader_open_catalog(ApiContext *ctx, ReaderViewState *state, char *status, size_t status_size) {
+    (void)ctx;
+    (void)status;
+    (void)status_size;
+    if (!state || state->doc.catalog_count <= 0) {
+        return;
+    }
+
+    reader_sync_catalog_selection(state);
+    state->catalog_open = 1;
+}
+
+static int reader_expand_catalog_for_selection(ApiContext *ctx, ReaderViewState *state,
+                                               int direction, char *status, size_t status_size) {
+    int added_count = 0;
+
+    if (!ctx || !state || !state->doc.catalog_items || state->doc.catalog_count <= 0) {
+        return 0;
+    }
+    if (reader_expand_catalog(ctx, &state->doc, direction, &added_count) != 0) {
+        if (status && status_size > 0) {
+            snprintf(status, status_size, "Failed to load more catalog chapters.");
+        }
+        return 0;
+    }
+    if (direction < 0 && added_count > 0) {
+        state->catalog_selected += added_count;
+    }
+    return added_count;
 }
 
 static void reader_build_page_summary(ReaderViewState *state, char *out, size_t out_size) {
@@ -1051,30 +1284,82 @@ static void reader_save_local_position(ApiContext *ctx, ReaderViewState *state) 
                                state->doc.font_size, state->current_page);
 }
 
-static void reader_maybe_report(ApiContext *ctx, ReaderViewState *state, int force,
-                                ProgressReportState *report_state, SDL_Thread **report_thread) {
+static void reader_progress_begin(ReaderViewState *state, Uint32 now) {
+    if (!state || state->progress_initialized) {
+        return;
+    }
+    state->progress_initialized = 1;
+    state->progress_paused = 0;
+    state->progress_initial_report_pending = 1;
+    state->progress_start_tick = now;
+    state->progress_pause_tick = 0;
+    state->progress_pause_deadline_tick = now + UI_PROGRESS_PAUSE_TIMEOUT_MS;
+    state->progress_report_due_tick = now + UI_PROGRESS_REPORT_INTERVAL_MS;
+}
+
+static void reader_progress_note_activity(ReaderViewState *state, Uint32 now) {
+    Uint32 paused_duration;
+
+    if (!state) {
+        return;
+    }
+    if (!state->progress_initialized) {
+        reader_progress_begin(state, now);
+        return;
+    }
+
+    state->progress_pause_deadline_tick = now + UI_PROGRESS_PAUSE_TIMEOUT_MS;
+    if (!state->progress_paused) {
+        return;
+    }
+
+    paused_duration = state->progress_pause_tick > 0 && now > state->progress_pause_tick ?
+        (now - state->progress_pause_tick) : 0;
+    if (paused_duration > 0 && state->progress_start_tick > 0) {
+        state->progress_start_tick += paused_duration;
+    }
+    state->progress_paused = 0;
+    state->progress_pause_tick = 0;
+    if (now - state->progress_start_tick > UI_PROGRESS_REPORT_INTERVAL_MS) {
+        state->progress_report_due_tick = now;
+    } else if (state->progress_report_due_tick == 0) {
+        state->progress_report_due_tick = state->progress_start_tick + UI_PROGRESS_REPORT_INTERVAL_MS;
+    }
+}
+
+static void reader_progress_finalize_thread(ReaderViewState *state,
+                                            ProgressReportState *report_state,
+                                            SDL_Thread **report_thread) {
     Uint32 now;
-    int elapsed_seconds;
 
-    if (!ctx || !state || !state->doc.book_id || !state->doc.token || !state->doc.chapter_uid) {
+    if (!state || !report_state || !report_thread || !*report_thread || report_state->running) {
         return;
     }
 
+    SDL_WaitThread(*report_thread, NULL);
+    *report_thread = NULL;
     now = SDL_GetTicks();
-    if (!force && now - state->last_progress_tick < 30000) {
+    if (report_state->result == 0) {
+        state->progress_start_tick = now;
+        if (!state->progress_paused) {
+            state->progress_report_due_tick = now + UI_PROGRESS_REPORT_INTERVAL_MS;
+        }
+    } else if (!state->progress_paused) {
+        state->progress_report_due_tick = now + UI_PROGRESS_REPORT_INTERVAL_MS;
+    }
+    progress_report_state_reset(report_state);
+}
+
+static void reader_progress_queue_report(ApiContext *ctx, ReaderViewState *state,
+                                         ProgressReportState *report_state,
+                                         SDL_Thread **report_thread, int reading_seconds,
+                                         int compute_progress) {
+    if (!ctx || !state || !report_state || !report_thread ||
+        !state->doc.book_id || !state->doc.token || !state->doc.chapter_uid) {
         return;
     }
 
-    elapsed_seconds = (int)((now - state->last_progress_tick) / 1000);
-    if (!force && elapsed_seconds <= 0) {
-        return;
-    }
-
-    if (*report_thread && !report_state->running) {
-        SDL_WaitThread(*report_thread, NULL);
-        *report_thread = NULL;
-        progress_report_state_reset(report_state);
-    }
+    reader_progress_finalize_thread(state, report_state, report_thread);
     if (*report_thread || report_state->running) {
         return;
     }
@@ -1087,15 +1372,56 @@ static void reader_maybe_report(ApiContext *ctx, ReaderViewState *state, int for
     }
     report_state->current_page = state->current_page;
     report_state->total_pages = reader_total_pages(state);
-    report_state->reading_seconds = elapsed_seconds > 0 ? elapsed_seconds : (force ? 1 : 0);
+    report_state->reading_seconds = reading_seconds > 0 ? reading_seconds : 0;
+    report_state->compute_progress = compute_progress;
     reader_build_page_summary(state, report_state->page_summary, sizeof(report_state->page_summary));
     report_state->running = 1;
     *report_thread = SDL_CreateThread(progress_report_thread, "weread-progress-report", report_state);
     if (!*report_thread) {
         progress_report_state_reset(report_state);
+    }
+}
+
+static void reader_progress_update(ApiContext *ctx, ReaderViewState *state,
+                                   ProgressReportState *report_state,
+                                   SDL_Thread **report_thread) {
+    Uint32 now;
+    Uint32 elapsed_ms;
+    int elapsed_seconds;
+
+    if (!ctx || !state || !report_state || !report_thread ||
+        !state->doc.book_id || !state->doc.token || !state->doc.chapter_uid) {
         return;
     }
-    state->last_progress_tick = now;
+
+    now = SDL_GetTicks();
+    reader_progress_begin(state, now);
+    reader_progress_finalize_thread(state, report_state, report_thread);
+
+    if (!state->progress_paused && now >= state->progress_pause_deadline_tick) {
+        state->progress_paused = 1;
+        state->progress_pause_tick = now;
+        state->progress_report_due_tick = 0;
+    }
+
+    if (*report_thread || report_state->running || state->progress_paused) {
+        return;
+    }
+
+    if (state->progress_initial_report_pending) {
+        state->progress_initial_report_pending = 0;
+        reader_progress_queue_report(ctx, state, report_state, report_thread, 0, 0);
+        return;
+    }
+
+    if (state->progress_report_due_tick == 0 || now < state->progress_report_due_tick) {
+        return;
+    }
+
+    elapsed_ms = state->progress_start_tick > 0 && now > state->progress_start_tick ?
+        (now - state->progress_start_tick) : 0;
+    elapsed_seconds = (int)(elapsed_ms / 1000);
+    reader_progress_queue_report(ctx, state, report_state, report_thread, elapsed_seconds, 1);
 }
 
 static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
@@ -1135,14 +1461,6 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
                       1024 - 2 * margin - 140,
                       title_buf, sizeof(title_buf));
     draw_text(renderer, body_font, margin, 22, muted, title_buf);
-
-    /* Chapter title on the first page of each chapter */
-    if (state->current_page == 0 && state->doc.chapter_title && state->doc.chapter_title[0]) {
-        fit_text_ellipsis(title_font, chapter_heading, 1024 - 2 * margin,
-                          title_buf, sizeof(title_buf));
-        draw_text(renderer, title_font, margin, y, ink, title_buf);
-        y += TTF_FontLineSkip(title_font) + 20;
-    }
 
     if (end_line > state->line_count) {
         end_line = state->line_count;
@@ -1235,25 +1553,16 @@ static int reader_open_with_saved_position(ApiContext *ctx, TTF_Font *body_font,
                                            const char *book_id, int font_size,
                                            ReaderViewState *reader_state) {
     char saved_target[2048];
-    char resolved_target[2048];
-    int saved_font_size = font_size;
+    char progress_target_buf[2048];
+    ReaderViewState saved_state = {0};
     int saved_page = 0;
     int has_local_position = 0;
+    int replace_with_saved_state = 0;
 
     if (book_id &&
         state_load_reader_position(ctx, book_id, target, saved_target, sizeof(saved_target),
-                                   &saved_font_size, &saved_page) == 0) {
+                                   NULL, &saved_page) == 0) {
         has_local_position = 1;
-    }
-
-    if (has_local_position &&
-        reader_view_load(ctx, body_font, saved_target, saved_font_size,
-                         UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 0,
-                         reader_state) == 0) {
-        reader_set_source_target(reader_state, target);
-        reader_state->current_page = saved_page;
-        reader_clamp_current_page(reader_state);
-        return 0;
     }
 
     if (reader_view_load(ctx, body_font, target, font_size,
@@ -1263,35 +1572,94 @@ static int reader_open_with_saved_position(ApiContext *ctx, TTF_Font *body_font,
     }
     reader_set_source_target(reader_state, target);
 
-    if (reader_state->doc.target && strcmp(reader_state->doc.target, target) != 0) {
-        snprintf(resolved_target, sizeof(resolved_target), "%s", reader_state->doc.target);
-        if (reader_view_load(ctx, body_font, resolved_target, font_size,
-                             UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 1,
-                             reader_state) != 0) {
-            return -1;
+    {
+        /* Always resolve against the server chapter first so startup follows
+           the latest cloud progress instead of short-circuiting to stale local
+           state from a previous session. */
+        const char *progress_target = reader_find_progress_target(reader_state);
+        char *fetched_target = NULL;
+        if (!progress_target &&
+            reader_state->doc.book_id &&
+            (reader_state->doc.progress_chapter_idx > 0 ||
+             (reader_state->doc.progress_chapter_uid &&
+              strcmp(reader_state->doc.progress_chapter_uid, "0") != 0))) {
+            /* The progress chapter was not found in the initially loaded catalog
+               window (the server returns a non-contiguous catalog that may skip
+               the middle of the book).  Do a targeted fetch to find it. */
+            fetched_target = reader_find_chapter_target(
+                ctx, reader_state->doc.book_id,
+                reader_state->doc.progress_chapter_uid,
+                reader_state->doc.progress_chapter_idx);
+            if (fetched_target) {
+                /* Only redirect if this target differs from what is loaded. */
+                if (!reader_state->doc.target ||
+                    strcmp(fetched_target, reader_state->doc.target) != 0) {
+                    progress_target = fetched_target;
+                }
+            }
         }
-        reader_set_source_target(reader_state, target);
+        if (progress_target) {
+            snprintf(progress_target_buf, sizeof(progress_target_buf), "%s", progress_target);
+            if (reader_view_load(ctx, body_font, progress_target_buf, font_size,
+                                 UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 1,
+                                 reader_state) != 0) {
+                free(fetched_target);
+                return -1;
+            }
+            reader_set_source_target(reader_state, target);
+        }
+        free(fetched_target);
     }
 
+    /* Local state may restore the page inside the same chapter, but it should
+       never override the chapter chosen by the current server state unless the
+       local chapter is at least as new as the cloud chapter. */
     if (has_local_position &&
         reader_state->doc.target && strcmp(saved_target, reader_state->doc.target) == 0) {
         reader_state->current_page = saved_page;
         reader_clamp_current_page(reader_state);
-    } else {
-        /* No local position — navigate to the server progress chapter if it
-           differs from the chapter that was just loaded. */
-        const char *progress_target = reader_find_progress_target(reader_state);
-        if (progress_target) {
-            char progress_target_buf[2048];
-            snprintf(progress_target_buf, sizeof(progress_target_buf), "%s", progress_target);
-            if (reader_view_load(ctx, body_font, progress_target_buf, font_size,
-                                 UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 1,
-                                 reader_state) == 0) {
-                reader_set_source_target(reader_state, target);
-            }
+    } else if (has_local_position &&
+               reader_view_load(ctx, body_font, saved_target, font_size,
+                                UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 0,
+                                &saved_state) == 0) {
+        int same_chapter = 0;
+        int saved_is_newer = 0;
+
+        if (saved_state.doc.chapter_uid && reader_state->doc.chapter_uid &&
+            strcmp(saved_state.doc.chapter_uid, reader_state->doc.chapter_uid) == 0) {
+            same_chapter = 1;
+        } else if (saved_state.doc.chapter_idx > 0 &&
+                   saved_state.doc.chapter_idx == reader_state->doc.chapter_idx) {
+            same_chapter = 1;
+        }
+
+        if (saved_state.doc.chapter_idx > 0 &&
+            reader_state->doc.chapter_idx > 0 &&
+            saved_state.doc.chapter_idx > reader_state->doc.chapter_idx) {
+            saved_is_newer = 1;
+        } else if (saved_state.doc.chapter_idx > 0 &&
+                   reader_state->doc.chapter_idx <= 0) {
+            saved_is_newer = 1;
+        }
+
+        if (same_chapter) {
+            reader_state->current_page = saved_page;
+            reader_clamp_current_page(reader_state);
+        } else if (saved_is_newer) {
+            replace_with_saved_state = 1;
         }
     }
+
+    if (replace_with_saved_state) {
+        reader_view_free(reader_state);
+        *reader_state = saved_state;
+        memset(&saved_state, 0, sizeof(saved_state));
+        reader_set_source_target(reader_state, target);
+        reader_state->current_page = saved_page;
+        reader_clamp_current_page(reader_state);
+    }
     reader_sync_catalog_selection(reader_state);
+    reader_view_free(&saved_state);
 
     return 0;
 }
@@ -1370,9 +1738,10 @@ int ui_is_available(void) {
     return 1;
 }
 
-int ui_run(ApiContext *ctx, const char *font_path) {
+int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     SDL_Window *window = NULL;
     SDL_Renderer *renderer = NULL;
+    SDL_Joystick **joysticks = NULL;
     TTF_Font *title_font = NULL;
     TTF_Font *body_font = NULL;
     cJSON *shelf_nuxt = NULL;
@@ -1394,6 +1763,8 @@ int ui_run(ApiContext *ctx, const char *font_path) {
     char status[256] = "";
     char shelf_status[256] = "";
     char qr_path[1024];
+    int tg5040_input = ui_is_tg5040_platform(platform);
+    int joystick_count = 0;
     int rc = -1;
 
     memset(&session, 0, sizeof(session));
@@ -1404,10 +1775,11 @@ int ui_run(ApiContext *ctx, const char *font_path) {
     memset(&reader_state, 0, sizeof(reader_state));
     snprintf(qr_path, sizeof(qr_path), "%s/weread-login-qr.png", ctx->data_dir);
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_JOYSTICK) != 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return -1;
     }
+    SDL_JoystickEventState(SDL_ENABLE);
     if (TTF_Init() != 0) {
         fprintf(stderr, "TTF_Init failed: %s\n", TTF_GetError());
         goto cleanup;
@@ -1426,6 +1798,18 @@ int ui_run(ApiContext *ctx, const char *font_path) {
     if (!window || !renderer) {
         fprintf(stderr, "SDL window setup failed: %s\n", SDL_GetError());
         goto cleanup;
+    }
+
+    joystick_count = SDL_NumJoysticks();
+    if (joystick_count > 0) {
+        joysticks = calloc((size_t)joystick_count, sizeof(*joysticks));
+        if (!joysticks) {
+            fprintf(stderr, "Failed to allocate joystick handles.\n");
+            goto cleanup;
+        }
+        for (int i = 0; i < joystick_count; i++) {
+            joysticks[i] = SDL_JoystickOpen(i);
+        }
     }
 
     if (font_path && *font_path) {
@@ -1455,15 +1839,16 @@ int ui_run(ApiContext *ctx, const char *font_path) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = 0;
-            } else if (event.type == SDL_KEYDOWN) {
-                SDL_Keycode key = event.key.keysym.sym;
-                if (key == SDLK_ESCAPE) {
+            } else if (event.type == SDL_KEYDOWN ||
+                       event.type == SDL_JOYBUTTONDOWN ||
+                       event.type == SDL_JOYHATMOTION ||
+                       event.type == SDL_JOYAXISMOTION) {
+                if (ui_event_is_back(&event, tg5040_input)) {
                     if (view == VIEW_READER) {
                         if (reader_state.catalog_open) {
                             reader_state.catalog_open = 0;
                         } else {
-                            reader_maybe_report(ctx, &reader_state, 1,
-                                                &progress_report, &progress_report_thread_handle);
+                            reader_save_local_position(ctx, &reader_state);
                             view = VIEW_SHELF;
                         }
                     } else {
@@ -1472,19 +1857,19 @@ int ui_run(ApiContext *ctx, const char *font_path) {
                 } else if (view == VIEW_SHELF) {
                     cJSON *books = shelf_nuxt ? shelf_books(shelf_nuxt) : NULL;
                     int count = books && cJSON_IsArray(books) ? cJSON_GetArraySize(books) : 0;
-                    if ((key == SDLK_DOWN || key == SDLK_s || key == SDLK_RIGHT || key == SDLK_d) &&
+                    if ((ui_event_is_down(&event, tg5040_input) || ui_event_is_right(&event, tg5040_input)) &&
                         count > 0 && selected + 1 < count) {
                         selected++;
                         if (selected >= shelf_start + 3) {
                             shelf_start = selected - 2;
                         }
-                    } else if ((key == SDLK_UP || key == SDLK_w || key == SDLK_LEFT || key == SDLK_a) &&
+                    } else if ((ui_event_is_up(&event, tg5040_input) || ui_event_is_left(&event, tg5040_input)) &&
                                selected > 0) {
                         selected--;
                         if (selected < shelf_start) {
                             shelf_start = selected;
                         }
-                    } else if (key == SDLK_r) {
+                    } else if (ui_event_is_shelf_resume(&event, tg5040_input)) {
                         char target[2048];
                         char source_target[2048];
                         int font_size = 3;
@@ -1497,6 +1882,33 @@ int ui_run(ApiContext *ctx, const char *font_path) {
                                 char saved_target[2048];
                                 int saved_font_size = font_size;
                                 int saved_page = 0;
+                                /* Sync to cloud progress if it points to a
+                                   different chapter than what was loaded. */
+                                {
+                                    const char *pt = reader_find_progress_target(&reader_state);
+                                    char *ft = NULL;
+                                    if (!pt && reader_state.doc.book_id &&
+                                        (reader_state.doc.progress_chapter_idx > 0 ||
+                                         (reader_state.doc.progress_chapter_uid &&
+                                          strcmp(reader_state.doc.progress_chapter_uid, "0") != 0))) {
+                                        ft = reader_find_chapter_target(
+                                            ctx, reader_state.doc.book_id,
+                                            reader_state.doc.progress_chapter_uid,
+                                            reader_state.doc.progress_chapter_idx);
+                                        if (ft && (!reader_state.doc.target ||
+                                                   strcmp(ft, reader_state.doc.target) != 0)) {
+                                            pt = ft;
+                                        }
+                                    }
+                                    if (pt) {
+                                        char ptbuf[2048];
+                                        snprintf(ptbuf, sizeof(ptbuf), "%s", pt);
+                                        reader_view_load(ctx, body_font, ptbuf, font_size,
+                                                         UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT,
+                                                         1, &reader_state);
+                                    }
+                                    free(ft);
+                                }
                                 if (reader_state.doc.book_id &&
                                     state_load_reader_position_by_book_id(
                                         ctx, reader_state.doc.book_id,
@@ -1519,7 +1931,10 @@ int ui_run(ApiContext *ctx, const char *font_path) {
                                          "Failed to open saved reader target.");
                             }
                         }
-                    } else if ((key == SDLK_RETURN || key == SDLK_SPACE || key == SDLK_RIGHT) && count > 0) {
+                    } else if ((ui_event_is_confirm(&event, tg5040_input) ||
+                                ui_event_is_keydown(&event, SDLK_RIGHT) ||
+                                ui_event_is_tg5040_button_down(&event, tg5040_input, TG5040_JOY_START)) &&
+                               count > 0) {
                         cJSON *book = cJSON_GetArrayItem(books, selected);
                         cJSON *urls = shelf_reader_urls(shelf_nuxt);
                         const char *target = shelf_reader_target(urls, selected);
@@ -1535,35 +1950,62 @@ int ui_run(ApiContext *ctx, const char *font_path) {
                         }
                     }
                 } else if (view == VIEW_LOGIN) {
-                    if ((key == SDLK_RETURN || key == SDLK_l) &&
+                    if ((ui_event_is_confirm(&event, tg5040_input) ||
+                         ui_event_is_keydown(&event, SDLK_l) ||
+                         ui_event_is_tg5040_button_down(&event, tg5040_input, TG5040_JOY_START)) &&
                         !login_start.running && !login_active) {
                         begin_login_flow(ctx, &login_start, &login_thread, &view,
                                          status, sizeof(status), qr_path);
                     }
                 } else if (view == VIEW_READER) {
                     int total_pages = reader_total_pages(&reader_state);
+                    reader_progress_note_activity(&reader_state, SDL_GetTicks());
                     if (reader_state.catalog_open) {
-                        if (key == SDLK_ESCAPE || key == SDLK_b || key == SDLK_c) {
+                        if (ui_event_is_back(&event, tg5040_input) ||
+                            ui_event_is_catalog_toggle(&event, tg5040_input)) {
                             reader_state.catalog_open = 0;
-                        } else if ((key == SDLK_UP || key == SDLK_w) &&
-                                   reader_state.catalog_selected > 0) {
-                            reader_state.catalog_selected--;
-                        } else if ((key == SDLK_DOWN || key == SDLK_s) &&
-                                   reader_state.catalog_selected + 1 < reader_state.doc.catalog_count) {
-                            reader_state.catalog_selected++;
-                        } else if ((key == SDLK_LEFT || key == SDLK_a) &&
-                                   reader_state.catalog_selected > 0) {
-                            reader_state.catalog_selected -= 10;
-                            if (reader_state.catalog_selected < 0) {
-                                reader_state.catalog_selected = 0;
+                        } else if (ui_event_is_up(&event, tg5040_input)) {
+                            if (reader_state.catalog_selected > 0) {
+                                reader_state.catalog_selected--;
+                            } else if (reader_expand_catalog_for_selection(ctx, &reader_state, -1,
+                                                                          shelf_status, sizeof(shelf_status)) > 0) {
+                                reader_state.catalog_selected--;
                             }
-                        } else if ((key == SDLK_RIGHT || key == SDLK_d) &&
-                                   reader_state.catalog_selected + 1 < reader_state.doc.catalog_count) {
-                            reader_state.catalog_selected += 10;
-                            if (reader_state.catalog_selected >= reader_state.doc.catalog_count) {
-                                reader_state.catalog_selected = reader_state.doc.catalog_count - 1;
+                        } else if (ui_event_is_down(&event, tg5040_input)) {
+                            if (reader_state.catalog_selected + 1 < reader_state.doc.catalog_count) {
+                                reader_state.catalog_selected++;
+                            } else if (reader_expand_catalog_for_selection(ctx, &reader_state, 1,
+                                                                          shelf_status, sizeof(shelf_status)) > 0 &&
+                                       reader_state.catalog_selected + 1 < reader_state.doc.catalog_count) {
+                                reader_state.catalog_selected++;
                             }
-                        } else if ((key == SDLK_RETURN || key == SDLK_SPACE) &&
+                        } else if (ui_event_is_left(&event, tg5040_input)) {
+                            if (reader_state.catalog_selected > 0) {
+                                reader_state.catalog_selected -= 10;
+                                if (reader_state.catalog_selected < 0) {
+                                    reader_state.catalog_selected = 0;
+                                }
+                            } else if (reader_expand_catalog_for_selection(ctx, &reader_state, -1,
+                                                                          shelf_status, sizeof(shelf_status)) > 0) {
+                                reader_state.catalog_selected -= 10;
+                                if (reader_state.catalog_selected < 0) {
+                                    reader_state.catalog_selected = 0;
+                                }
+                            }
+                        } else if (ui_event_is_right(&event, tg5040_input)) {
+                            if (reader_state.catalog_selected + 1 < reader_state.doc.catalog_count) {
+                                reader_state.catalog_selected += 10;
+                                if (reader_state.catalog_selected >= reader_state.doc.catalog_count) {
+                                    reader_state.catalog_selected = reader_state.doc.catalog_count - 1;
+                                }
+                            } else if (reader_expand_catalog_for_selection(ctx, &reader_state, 1,
+                                                                          shelf_status, sizeof(shelf_status)) > 0) {
+                                reader_state.catalog_selected += 10;
+                                if (reader_state.catalog_selected >= reader_state.doc.catalog_count) {
+                                    reader_state.catalog_selected = reader_state.doc.catalog_count - 1;
+                                }
+                            }
+                        } else if (ui_event_is_confirm(&event, tg5040_input) &&
                                    reader_state.doc.catalog_items &&
                                    reader_state.catalog_selected >= 0 &&
                                    reader_state.catalog_selected < reader_state.doc.catalog_count) {
@@ -1575,8 +2017,6 @@ int ui_run(ApiContext *ctx, const char *font_path) {
                             if (item->target && item->target[0]) {
                                 snprintf(source_target, sizeof(source_target), "%s",
                                          reader_state.source_target);
-                                reader_maybe_report(ctx, &reader_state, 1,
-                                                    &progress_report, &progress_report_thread_handle);
                                 if (reader_view_load(ctx, body_font, item->target, font_size,
                                                      UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 0,
                                                      &reader_state) == 0) {
@@ -1590,24 +2030,20 @@ int ui_run(ApiContext *ctx, const char *font_path) {
                                 }
                             }
                         }
-                    } else if (key == SDLK_c && reader_state.doc.catalog_count > 0) {
-                        reader_sync_catalog_selection(&reader_state);
-                        reader_state.catalog_open = 1;
-                    } else if ((key == SDLK_RIGHT || key == SDLK_d || key == SDLK_SPACE) &&
+                    } else if (ui_event_is_catalog_toggle(&event, tg5040_input) &&
+                               reader_state.doc.catalog_count > 0) {
+                        reader_open_catalog(ctx, &reader_state, shelf_status, sizeof(shelf_status));
+                    } else if ((ui_event_is_right(&event, tg5040_input) || ui_event_is_confirm(&event, tg5040_input)) &&
                         reader_state.current_page + 1 < total_pages) {
                         reader_state.current_page++;
                         reader_save_local_position(ctx, &reader_state);
-                        reader_maybe_report(ctx, &reader_state, 1,
-                                            &progress_report, &progress_report_thread_handle);
-                    } else if ((key == SDLK_RIGHT || key == SDLK_d || key == SDLK_SPACE) &&
+                    } else if ((ui_event_is_right(&event, tg5040_input) || ui_event_is_confirm(&event, tg5040_input)) &&
                                reader_state.doc.next_target && reader_state.doc.next_target[0]) {
                         char *target = strdup(reader_state.doc.next_target);
                         char source_target[2048];
                         int font_size = reader_state.doc.font_size;
                         if (target) {
                             snprintf(source_target, sizeof(source_target), "%s", reader_state.source_target);
-                            reader_maybe_report(ctx, &reader_state, 1,
-                                                &progress_report, &progress_report_thread_handle);
                             if (reader_view_load(ctx, body_font, target, font_size,
                                                  UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 0,
                                                  &reader_state) == 0) {
@@ -1620,20 +2056,16 @@ int ui_run(ApiContext *ctx, const char *font_path) {
                             }
                             free(target);
                         }
-                    } else if ((key == SDLK_LEFT || key == SDLK_a) && reader_state.current_page > 0) {
+                    } else if (ui_event_is_left(&event, tg5040_input) && reader_state.current_page > 0) {
                         reader_state.current_page--;
                         reader_save_local_position(ctx, &reader_state);
-                        reader_maybe_report(ctx, &reader_state, 1,
-                                            &progress_report, &progress_report_thread_handle);
-                    } else if ((key == SDLK_LEFT || key == SDLK_a) &&
+                    } else if (ui_event_is_left(&event, tg5040_input) &&
                                reader_state.doc.prev_target && reader_state.doc.prev_target[0]) {
                         char *target = strdup(reader_state.doc.prev_target);
                         char source_target[2048];
                         int font_size = reader_state.doc.font_size;
                         if (target) {
                             snprintf(source_target, sizeof(source_target), "%s", reader_state.source_target);
-                            reader_maybe_report(ctx, &reader_state, 1,
-                                                &progress_report, &progress_report_thread_handle);
                             if (reader_view_load(ctx, body_font, target, font_size,
                                                  UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 0,
                                                  &reader_state) == 0) {
@@ -1648,15 +2080,13 @@ int ui_run(ApiContext *ctx, const char *font_path) {
                             }
                             free(target);
                         }
-                    } else if ((key == SDLK_UP || key == SDLK_w) &&
+                    } else if (ui_event_is_chapter_prev(&event, tg5040_input) &&
                                reader_state.doc.prev_target && reader_state.doc.prev_target[0]) {
                         char *target = strdup(reader_state.doc.prev_target);
                         char source_target[2048];
                         int font_size = reader_state.doc.font_size;
                         if (target) {
                             snprintf(source_target, sizeof(source_target), "%s", reader_state.source_target);
-                            reader_maybe_report(ctx, &reader_state, 1,
-                                                &progress_report, &progress_report_thread_handle);
                             if (reader_view_load(ctx, body_font, target, font_size,
                                                  UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 0,
                                                  &reader_state) == 0) {
@@ -1669,15 +2099,13 @@ int ui_run(ApiContext *ctx, const char *font_path) {
                             }
                             free(target);
                         }
-                    } else if ((key == SDLK_DOWN || key == SDLK_s) &&
+                    } else if (ui_event_is_chapter_next(&event, tg5040_input) &&
                                reader_state.doc.next_target && reader_state.doc.next_target[0]) {
                         char *target = strdup(reader_state.doc.next_target);
                         char source_target[2048];
                         int font_size = reader_state.doc.font_size;
                         if (target) {
                             snprintf(source_target, sizeof(source_target), "%s", reader_state.source_target);
-                            reader_maybe_report(ctx, &reader_state, 1,
-                                                &progress_report, &progress_report_thread_handle);
                             if (reader_view_load(ctx, body_font, target, font_size,
                                                  UI_READER_CONTENT_WIDTH, UI_READER_CONTENT_HEIGHT, 0,
                                                  &reader_state) == 0) {
@@ -1690,10 +2118,12 @@ int ui_run(ApiContext *ctx, const char *font_path) {
                             }
                             free(target);
                         }
-                    } else if (key == SDLK_b) {
+                    } else if (ui_event_is_tg5040_button_down(&event, tg5040_input, TG5040_JOY_START)) {
+                        if (reader_state.doc.catalog_count > 0) {
+                            reader_open_catalog(ctx, &reader_state, shelf_status, sizeof(shelf_status));
+                        }
+                    } else if (ui_event_is_keydown(&event, SDLK_b)) {
                         reader_save_local_position(ctx, &reader_state);
-                        reader_maybe_report(ctx, &reader_state, 1,
-                                            &progress_report, &progress_report_thread_handle);
                         view = VIEW_SHELF;
                     }
                 }
@@ -1701,8 +2131,8 @@ int ui_run(ApiContext *ctx, const char *font_path) {
         }
 
         if (view == VIEW_READER) {
-            reader_maybe_report(ctx, &reader_state, 0,
-                                &progress_report, &progress_report_thread_handle);
+            reader_progress_update(ctx, &reader_state,
+                                   &progress_report, &progress_report_thread_handle);
         }
 
         if (view == VIEW_LOGIN && login_start.running == 0 && login_thread) {
@@ -1777,8 +2207,6 @@ int ui_run(ApiContext *ctx, const char *font_path) {
 cleanup:
     if (view == VIEW_READER) {
         reader_save_local_position(ctx, &reader_state);
-        reader_maybe_report(ctx, &reader_state, 1,
-                            &progress_report, &progress_report_thread_handle);
     }
     if (login_thread) {
         SDL_WaitThread(login_thread, NULL);
@@ -1806,6 +2234,14 @@ cleanup:
     if (window) {
         SDL_DestroyWindow(window);
     }
+    if (joysticks) {
+        for (int i = 0; i < joystick_count; i++) {
+            if (joysticks[i]) {
+                SDL_JoystickClose(joysticks[i]);
+            }
+        }
+    }
+    free(joysticks);
     IMG_Quit();
     TTF_Quit();
     SDL_Quit();
@@ -1820,9 +2256,10 @@ int ui_is_available(void) {
     return 0;
 }
 
-int ui_run(ApiContext *ctx, const char *font_path) {
+int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     (void)ctx;
     (void)font_path;
+    (void)platform;
     fprintf(stderr, "UI support is unavailable in this build.\n");
     return -1;
 }
