@@ -1,0 +1,7 @@
+{
+  "label": "WeRead",
+  "icon": "icon.png",
+  "iconsel": "icon.png",
+  "launch": "launch.sh",
+  "description": "WeChat Read client"
+}

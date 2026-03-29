@@ -269,6 +269,10 @@ All chapter-specific fields (`chapterUid`, `chapterIdx`, `chapterOffset`, `progr
 - `make stock-release`
   - Produces `dist/WeRead-stock-app.tar.gz`
   - Installs under `Apps/WeRead`
+- `make crossmix-release`
+  - Produces `dist/WeRead-crossmix.tar.gz`
+  - Installs under `Apps/WeRead`
+  - CrossMix-OS variant: launch.sh adds `/mnt/SDCARD/System/bin` to PATH and `/mnt/SDCARD/System/lib` to LD_LIBRARY_PATH
 
 ### TG5040 / TrimUI build rules
 
@@ -288,6 +292,9 @@ All chapter-specific fields (`chapterUid`, `chapterIdx`, `chapterOffset`, `progr
 - Stock OS launch/config templates:
   - `packaging/stock/launch.sh`
   - `packaging/stock/config.json`
+- CrossMix-OS launch/config templates:
+  - `packaging/crossmix/launch.sh`
+  - `packaging/crossmix/config.json`
 - macOS runner template:
   - `packaging/macos/run.sh`
 

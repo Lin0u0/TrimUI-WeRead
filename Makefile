@@ -100,8 +100,8 @@ LDFLAGS := $(SDL_LIBS) $(CURL_LIBS) $(COMMON_LDFLAGS) $(if $(filter tg5040,$(PLA
 
 .PHONY: all help clean clean-native clean-tg5040 clean-dist \
 	dirs native tg5040 tg5040-sdk tg5040-libcurl tg5040-bootstrap \
-	package package-native package-tg5040 package-nextui package-stock package-all \
-	macos-release nextui-release stock-release print-config
+	package package-native package-tg5040 package-nextui package-stock package-crossmix package-all \
+	macos-release nextui-release stock-release crossmix-release print-config
 
 all: $(TARGET_PATH)
 
@@ -110,6 +110,7 @@ help:
 	@printf '%s\n' '  make macos-release      Build the macOS test archive'
 	@printf '%s\n' '  make nextui-release     Build the NextUI / MinUI archive'
 	@printf '%s\n' '  make stock-release      Build the TrimUI stock OS app archive'
+	@printf '%s\n' '  make crossmix-release   Build the CrossMix-OS app archive'
 	@printf '%s\n' '  make package-all        Build all distributable archives'
 	@printf '%s\n' ''
 	@printf '%s\n' 'TG5040 dependency targets:'
@@ -210,6 +211,27 @@ package-stock: tg5040-bootstrap
 	cp -a "$(shell $(CC) -print-sysroot 2>/dev/null)/lib/libgcc_s.so.1" "$(STAGE_ROOT)/stock/Apps/WeRead/lib/tg5040/libgcc_s.so.1"
 	tar -C "$(STAGE_ROOT)/stock" -czf "$(DIST_DIR)/$(APP_NAME)-stock-app.tar.gz" Apps
 
+package-crossmix: tg5040-bootstrap
+	@rm -rf build/tg5040
+	$(MAKE) PLATFORM=tg5040 all
+	@test -f "$(ASSET_FONT)" || { echo "missing font asset: $(ASSET_FONT)" >&2; exit 1; }
+	@test -f "$(ASSET_ICON)" || { echo "missing icon asset: $(ASSET_ICON)" >&2; exit 1; }
+	@rm -rf "$(STAGE_ROOT)/crossmix"
+	@mkdir -p "$(STAGE_ROOT)/crossmix/Apps/WeRead/bin/tg5040"
+	@mkdir -p "$(STAGE_ROOT)/crossmix/Apps/WeRead/lib/tg5040"
+	@mkdir -p "$(STAGE_ROOT)/crossmix/Apps/WeRead/res/fonts"
+	cp packaging/crossmix/launch.sh "$(STAGE_ROOT)/crossmix/Apps/WeRead/launch.sh"
+	cp packaging/crossmix/config.json "$(STAGE_ROOT)/crossmix/Apps/WeRead/config.json"
+	cp "$(ASSET_ICON)" "$(STAGE_ROOT)/crossmix/Apps/WeRead/icon.png"
+	cp "$(ASSET_FONT)" "$(STAGE_ROOT)/crossmix/Apps/WeRead/res/fonts/SourceHanSerifSC-Regular.otf"
+	cp "$(TARGET_PATH)" "$(STAGE_ROOT)/crossmix/Apps/WeRead/bin/tg5040/$(TARGET)"
+	chmod +x "$(STAGE_ROOT)/crossmix/Apps/WeRead/launch.sh" "$(STAGE_ROOT)/crossmix/Apps/WeRead/bin/tg5040/$(TARGET)"
+	@for lib in $(TG5040_RUNTIME_LIBS); do \
+		cp -a "$(TG5040_SDK_USR)/lib/$$lib" "$(STAGE_ROOT)/crossmix/Apps/WeRead/lib/tg5040/"; \
+	done
+	cp -a "$(shell $(CC) -print-sysroot 2>/dev/null)/lib/libgcc_s.so.1" "$(STAGE_ROOT)/crossmix/Apps/WeRead/lib/tg5040/libgcc_s.so.1"
+	tar -C "$(STAGE_ROOT)/crossmix" -czf "$(DIST_DIR)/$(APP_NAME)-crossmix.tar.gz" Apps
+
 macos-release:
 	$(MAKE) PLATFORM=native package-native
 
@@ -219,7 +241,10 @@ nextui-release:
 stock-release:
 	$(MAKE) PLATFORM=tg5040 package-stock
 
-package-all: macos-release nextui-release stock-release
+crossmix-release:
+	$(MAKE) PLATFORM=tg5040 package-crossmix
+
+package-all: macos-release nextui-release stock-release crossmix-release
 
 print-config:
 	@echo "PLATFORM=$(PLATFORM)"
