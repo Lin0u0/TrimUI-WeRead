@@ -25,6 +25,7 @@ typedef struct {
     char data_dir[512];
     char state_dir[512];
     char cookie_file[512];
+    char ca_file[512];
     char error_buf[CURL_ERROR_SIZE];
 } ApiContext;
 

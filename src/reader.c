@@ -1717,6 +1717,58 @@ static int reader_hydrate_full_catalog(ApiContext *ctx, ReaderDocument *doc) {
     return 0;
 }
 
+static int reader_catalog_needs_focus_window(const ReaderDocument *doc) {
+    if (!doc || !doc->catalog_items || doc->catalog_count <= 0 || doc->chapter_idx <= 0) {
+        return 0;
+    }
+    if (doc->chapter_idx < doc->catalog_items[0].chapter_idx ||
+        doc->chapter_idx > doc->catalog_items[doc->catalog_count - 1].chapter_idx) {
+        return 1;
+    }
+    for (int i = 0; i + 1 < doc->catalog_count; i++) {
+        if (doc->catalog_items[i + 1].chapter_idx - doc->catalog_items[i].chapter_idx > 3) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int reader_focus_catalog_window(ApiContext *ctx, ReaderDocument *doc) {
+    ReaderCatalogItem *chunk = NULL;
+    int chunk_count = 0;
+    int first_idx = 0;
+    int last_idx = 0;
+    int range_start;
+
+    if (!ctx || !doc || !doc->book_id || !doc->book_id[0] || doc->chapter_idx <= 0) {
+        return -1;
+    }
+
+    range_start = doc->chapter_idx > 20 ? doc->chapter_idx - 20 : 0;
+    if (reader_fetch_catalog_chunk(ctx, doc->book_id, 2, range_start, range_start,
+                                   doc->chapter_uid, &chunk, &chunk_count,
+                                   &first_idx, &last_idx) != 0 || chunk_count <= 0) {
+        return -1;
+    }
+
+    reader_catalog_items_free(doc->catalog_items, doc->catalog_count);
+    doc->catalog_items = chunk;
+    doc->catalog_count = chunk_count;
+    qsort(doc->catalog_items, (size_t)doc->catalog_count, sizeof(*doc->catalog_items),
+          catalog_item_cmp_chapter_idx);
+    return 0;
+}
+
+int reader_focus_catalog(ApiContext *ctx, ReaderDocument *doc) {
+    if (!doc) {
+        return -1;
+    }
+    if (!reader_catalog_needs_focus_window(doc)) {
+        return 0;
+    }
+    return reader_focus_catalog_window(ctx, doc);
+}
+
 static int is_catalog_block_name(const char *name, size_t len) {
     static const char suffix[] = "Catalogs";
     size_t suffix_len = sizeof(suffix) - 1;
@@ -2073,7 +2125,8 @@ void reader_document_free(ReaderDocument *doc) {
     memset(doc, 0, sizeof(*doc));
 }
 
-int reader_load(ApiContext *ctx, const char *target, int font_size, ReaderDocument *doc) {
+static int reader_load_internal(ApiContext *ctx, const char *target, int font_size,
+                                ReaderDocument *doc, int save_last_reader) {
     Buffer buf = {0};
     char *url = build_reader_url(ctx, target, font_size);
     char *content_html_fallback = NULL;
@@ -2246,12 +2299,15 @@ int reader_load(ApiContext *ctx, const char *target, int font_size, ReaderDocume
     if (!doc->content_text || !doc->target) {
         goto cleanup;
     }
+    reader_focus_catalog(ctx, doc);
     if (ensure_random_font(ctx, doc->content_font_path, sizeof(doc->content_font_path)) == 0) {
         doc->use_content_font = 1;
     }
 
     rc = 0;
-    state_save_last_reader(ctx, doc->target, font_size);
+    if (save_last_reader) {
+        state_save_last_reader(ctx, doc->target, font_size, 36);
+    }
 
 cleanup:
     if (rc != 0) {
@@ -2264,6 +2320,14 @@ cleanup:
     free(chapter_idx_value);
     free(chapter_word_count_value);
     return rc;
+}
+
+int reader_load(ApiContext *ctx, const char *target, int font_size, ReaderDocument *doc) {
+    return reader_load_internal(ctx, target, font_size, doc, 1);
+}
+
+int reader_prefetch(ApiContext *ctx, const char *target, int font_size, ReaderDocument *doc) {
+    return reader_load_internal(ctx, target, font_size, doc, 0);
 }
 
 int reader_ensure_full_catalog(ApiContext *ctx, ReaderDocument *doc) {
@@ -2570,7 +2634,7 @@ int reader_resume(ApiContext *ctx) {
     char target[2048];
     int font_size = 3;
 
-    if (state_load_last_reader(ctx, target, sizeof(target), &font_size) != 0) {
+    if (state_load_last_reader(ctx, target, sizeof(target), &font_size, NULL) != 0) {
         fprintf(stderr, "No saved reader state found in %s\n", ctx->state_dir);
         return -1;
     }

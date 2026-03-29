@@ -1,8 +1,7 @@
 {
   "label": "WeRead",
-  "icon": "icon.png",
-  "icontop": "icon.png",
-  "background": "",
-  "themecolor": "D6BD79",
-  "launch": "launch.sh"
+  "icon": "",
+  "icontop": "icontop.png",
+  "launch": "launch.sh",
+  "description": "WeChat Read"
 }

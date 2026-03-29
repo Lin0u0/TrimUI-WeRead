@@ -15,6 +15,8 @@ OBJS := $(patsubst %.c,$(OBJ_DIR)/%.o,$(SRCS))
 
 ASSET_FONT := assets/fonts/SourceHanSerifSC-Regular.otf
 ASSET_ICON := assets/icons/weread.png
+ASSET_ICONTOP := assets/icons/weread-icontop.png
+ASSET_CACERT := assets/cacert.pem
 
 PKG_CONFIG ?= pkg-config
 CURL_CONFIG ?= curl-config
@@ -182,12 +184,13 @@ package-nextui: tg5040-bootstrap
 	cp "$(ASSET_ICON)" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/icon.png"
 	cp "$(ASSET_ICON)" "$(STAGE_ROOT)/nextui/Tools/tg5040/.media/WeRead.png"
 	cp "$(ASSET_FONT)" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/res/fonts/SourceHanSerifSC-Regular.otf"
+	cp "$(ASSET_CACERT)" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/res/cacert.pem"
 	cp "$(TARGET_PATH)" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/bin/tg5040/$(TARGET)"
 	chmod +x "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/launch.sh" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/bin/tg5040/$(TARGET)"
 	@for lib in $(TG5040_RUNTIME_LIBS); do \
-		cp -a "$(TG5040_SDK_USR)/lib/$$lib" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/lib/tg5040/"; \
+		cp -aL "$(TG5040_SDK_USR)/lib/$$lib" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/lib/tg5040/"; \
 	done
-	cp -a "$(shell $(CC) -print-sysroot 2>/dev/null)/lib/libgcc_s.so.1" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/lib/tg5040/libgcc_s.so.1"
+	cp -aL "$(shell $(CC) -print-sysroot 2>/dev/null)/lib/libgcc_s.so.1" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/lib/tg5040/libgcc_s.so.1"
 	tar -C "$(STAGE_ROOT)/nextui" -czf "$(DIST_DIR)/$(APP_NAME)-nextui.tar.gz" Tools
 
 package-stock: tg5040-bootstrap
@@ -195,6 +198,7 @@ package-stock: tg5040-bootstrap
 	$(MAKE) PLATFORM=tg5040 all
 	@test -f "$(ASSET_FONT)" || { echo "missing font asset: $(ASSET_FONT)" >&2; exit 1; }
 	@test -f "$(ASSET_ICON)" || { echo "missing icon asset: $(ASSET_ICON)" >&2; exit 1; }
+	@test -f "$(ASSET_ICONTOP)" || { echo "missing icontop asset: $(ASSET_ICONTOP)" >&2; exit 1; }
 	@rm -rf "$(STAGE_ROOT)/stock"
 	@mkdir -p "$(STAGE_ROOT)/stock/Apps/WeRead/bin/tg5040"
 	@mkdir -p "$(STAGE_ROOT)/stock/Apps/WeRead/lib/tg5040"
@@ -202,13 +206,15 @@ package-stock: tg5040-bootstrap
 	cp packaging/stock/launch.sh "$(STAGE_ROOT)/stock/Apps/WeRead/launch.sh"
 	cp packaging/stock/config.json "$(STAGE_ROOT)/stock/Apps/WeRead/config.json"
 	cp "$(ASSET_ICON)" "$(STAGE_ROOT)/stock/Apps/WeRead/icon.png"
+	cp "$(ASSET_ICONTOP)" "$(STAGE_ROOT)/stock/Apps/WeRead/icontop.png"
 	cp "$(ASSET_FONT)" "$(STAGE_ROOT)/stock/Apps/WeRead/res/fonts/SourceHanSerifSC-Regular.otf"
+	cp "$(ASSET_CACERT)" "$(STAGE_ROOT)/stock/Apps/WeRead/res/cacert.pem"
 	cp "$(TARGET_PATH)" "$(STAGE_ROOT)/stock/Apps/WeRead/bin/tg5040/$(TARGET)"
 	chmod +x "$(STAGE_ROOT)/stock/Apps/WeRead/launch.sh" "$(STAGE_ROOT)/stock/Apps/WeRead/bin/tg5040/$(TARGET)"
 	@for lib in $(TG5040_RUNTIME_LIBS); do \
-		cp -a "$(TG5040_SDK_USR)/lib/$$lib" "$(STAGE_ROOT)/stock/Apps/WeRead/lib/tg5040/"; \
+		cp -aL "$(TG5040_SDK_USR)/lib/$$lib" "$(STAGE_ROOT)/stock/Apps/WeRead/lib/tg5040/"; \
 	done
-	cp -a "$(shell $(CC) -print-sysroot 2>/dev/null)/lib/libgcc_s.so.1" "$(STAGE_ROOT)/stock/Apps/WeRead/lib/tg5040/libgcc_s.so.1"
+	cp -aL "$(shell $(CC) -print-sysroot 2>/dev/null)/lib/libgcc_s.so.1" "$(STAGE_ROOT)/stock/Apps/WeRead/lib/tg5040/libgcc_s.so.1"
 	tar -C "$(STAGE_ROOT)/stock" -czf "$(DIST_DIR)/$(APP_NAME)-stock-app.tar.gz" Apps
 
 package-crossmix: tg5040-bootstrap
@@ -224,12 +230,13 @@ package-crossmix: tg5040-bootstrap
 	cp packaging/crossmix/config.json "$(STAGE_ROOT)/crossmix/Apps/WeRead/config.json"
 	cp "$(ASSET_ICON)" "$(STAGE_ROOT)/crossmix/Apps/WeRead/icon.png"
 	cp "$(ASSET_FONT)" "$(STAGE_ROOT)/crossmix/Apps/WeRead/res/fonts/SourceHanSerifSC-Regular.otf"
+	cp "$(ASSET_CACERT)" "$(STAGE_ROOT)/crossmix/Apps/WeRead/res/cacert.pem"
 	cp "$(TARGET_PATH)" "$(STAGE_ROOT)/crossmix/Apps/WeRead/bin/tg5040/$(TARGET)"
 	chmod +x "$(STAGE_ROOT)/crossmix/Apps/WeRead/launch.sh" "$(STAGE_ROOT)/crossmix/Apps/WeRead/bin/tg5040/$(TARGET)"
 	@for lib in $(TG5040_RUNTIME_LIBS); do \
-		cp -a "$(TG5040_SDK_USR)/lib/$$lib" "$(STAGE_ROOT)/crossmix/Apps/WeRead/lib/tg5040/"; \
+		cp -aL "$(TG5040_SDK_USR)/lib/$$lib" "$(STAGE_ROOT)/crossmix/Apps/WeRead/lib/tg5040/"; \
 	done
-	cp -a "$(shell $(CC) -print-sysroot 2>/dev/null)/lib/libgcc_s.so.1" "$(STAGE_ROOT)/crossmix/Apps/WeRead/lib/tg5040/libgcc_s.so.1"
+	cp -aL "$(shell $(CC) -print-sysroot 2>/dev/null)/lib/libgcc_s.so.1" "$(STAGE_ROOT)/crossmix/Apps/WeRead/lib/tg5040/libgcc_s.so.1"
 	tar -C "$(STAGE_ROOT)/crossmix" -czf "$(DIST_DIR)/$(APP_NAME)-crossmix.tar.gz" Apps
 
 macos-release:

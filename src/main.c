@@ -12,6 +12,7 @@ typedef struct {
     const char *data_dir;
     const char *font_path;
     const char *platform;
+    const char *ca_file;
 } AppOptions;
 
 static void usage(const char *argv0) {
@@ -47,6 +48,8 @@ int main(int argc, char **argv) {
             options.font_path = argv[++argi];
         } else if (strcmp(argv[argi], "--platform") == 0 && argi + 1 < argc) {
             options.platform = argv[++argi];
+        } else if (strcmp(argv[argi], "--cafile") == 0 && argi + 1 < argc) {
+            options.ca_file = argv[++argi];
         } else if (strcmp(argv[argi], "--help") == 0 || strcmp(argv[argi], "-h") == 0) {
             usage(argv[0]);
             return 0;
@@ -71,6 +74,9 @@ int main(int argc, char **argv) {
     if (api_init(&ctx, options.data_dir) != 0) {
         fprintf(stderr, "Failed to initialize API context\n");
         return 1;
+    }
+    if (options.ca_file) {
+        snprintf(ctx.ca_file, sizeof(ctx.ca_file), "%s", options.ca_file);
     }
 
     if (strcmp(command, "login") == 0) {

@@ -89,6 +89,9 @@ static void setup_curl(ApiContext *ctx, const char *url, const char *user_agent,
     curl_easy_setopt(c, CURLOPT_ERRORBUFFER, ctx->error_buf);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, timeout_seconds);
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
+    if (ctx->ca_file[0]) {
+        curl_easy_setopt(c, CURLOPT_CAINFO, ctx->ca_file);
+    }
     curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, "");
 }
 

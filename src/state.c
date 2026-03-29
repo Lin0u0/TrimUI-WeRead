@@ -95,7 +95,7 @@ cJSON *state_read_json(ApiContext *ctx, const char *name) {
     return json;
 }
 
-int state_save_last_reader(ApiContext *ctx, const char *target, int font_size) {
+int state_save_last_reader(ApiContext *ctx, const char *target, int font_size, int content_font_size) {
     cJSON *json;
     int rc;
 
@@ -109,12 +109,14 @@ int state_save_last_reader(ApiContext *ctx, const char *target, int font_size) {
     }
     cJSON_AddStringToObject(json, "target", target);
     cJSON_AddNumberToObject(json, "fontSize", font_size);
+    cJSON_AddNumberToObject(json, "contentFontSize", content_font_size);
     rc = state_write_json(ctx, "last-reader.json", json);
     cJSON_Delete(json);
     return rc;
 }
 
-int state_load_last_reader(ApiContext *ctx, char *target, size_t target_size, int *font_size) {
+int state_load_last_reader(ApiContext *ctx, char *target, size_t target_size, int *font_size,
+                           int *content_font_size) {
     cJSON *json = state_read_json(ctx, "last-reader.json");
     const char *saved_target;
 
@@ -132,12 +134,16 @@ int state_load_last_reader(ApiContext *ctx, char *target, size_t target_size, in
     if (font_size) {
         *font_size = json_get_int(json, "fontSize", 3);
     }
+    if (content_font_size) {
+        *content_font_size = json_get_int(json, "contentFontSize", 36);
+    }
     cJSON_Delete(json);
     return 0;
 }
 
 int state_save_reader_position(ApiContext *ctx, const char *book_id, const char *source_target,
-                               const char *target, int font_size, int current_page) {
+                               const char *target, int font_size, int content_font_size,
+                               int current_page) {
     cJSON *positions;
     cJSON *entry;
     int rc;
@@ -163,6 +169,7 @@ int state_save_reader_position(ApiContext *ctx, const char *book_id, const char 
     cJSON_AddStringToObject(entry, "sourceTarget", source_target);
     cJSON_AddStringToObject(entry, "target", target);
     cJSON_AddNumberToObject(entry, "fontSize", font_size);
+    cJSON_AddNumberToObject(entry, "contentFontSize", content_font_size);
     cJSON_AddNumberToObject(entry, "currentPage", current_page);
 
     if (cJSON_GetObjectItemCaseSensitive(positions, book_id)) {
@@ -176,7 +183,8 @@ int state_save_reader_position(ApiContext *ctx, const char *book_id, const char 
 }
 
 int state_load_reader_position(ApiContext *ctx, const char *book_id, const char *source_target,
-                               char *target, size_t target_size, int *font_size, int *current_page) {
+                               char *target, size_t target_size, int *font_size,
+                               int *content_font_size, int *current_page) {
     cJSON *positions;
     cJSON *entry;
     const char *saved_source_target;
@@ -214,6 +222,9 @@ int state_load_reader_position(ApiContext *ctx, const char *book_id, const char 
     if (font_size) {
         *font_size = json_get_int(entry, "fontSize", 3);
     }
+    if (content_font_size) {
+        *content_font_size = json_get_int(entry, "contentFontSize", 36);
+    }
     if (current_page) {
         *current_page = json_get_int(entry, "currentPage", 0);
     }
@@ -224,7 +235,8 @@ int state_load_reader_position(ApiContext *ctx, const char *book_id, const char 
 int state_load_reader_position_by_book_id(ApiContext *ctx, const char *book_id,
                                           char *source_target, size_t source_target_size,
                                           char *target, size_t target_size,
-                                          int *font_size, int *current_page) {
+                                          int *font_size, int *content_font_size,
+                                          int *current_page) {
     cJSON *positions;
     cJSON *entry;
     const char *saved_source_target;
@@ -259,6 +271,9 @@ int state_load_reader_position_by_book_id(ApiContext *ctx, const char *book_id,
     }
     if (font_size) {
         *font_size = json_get_int(entry, "fontSize", 3);
+    }
+    if (content_font_size) {
+        *content_font_size = json_get_int(entry, "contentFontSize", 36);
     }
     if (current_page) {
         *current_page = json_get_int(entry, "currentPage", 0);

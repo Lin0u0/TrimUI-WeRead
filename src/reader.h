@@ -51,6 +51,8 @@ typedef struct {
 #define READER_REPORT_SESSION_EXPIRED (-2)
 
 int reader_load(ApiContext *ctx, const char *target, int font_size, ReaderDocument *doc);
+int reader_prefetch(ApiContext *ctx, const char *target, int font_size, ReaderDocument *doc);
+int reader_focus_catalog(ApiContext *ctx, ReaderDocument *doc);
 int reader_ensure_full_catalog(ApiContext *ctx, ReaderDocument *doc);
 int reader_expand_catalog(ApiContext *ctx, ReaderDocument *doc, int direction, int *added_count);
 int reader_estimate_chapter_offset(const ReaderDocument *doc, int current_page, int total_pages);
