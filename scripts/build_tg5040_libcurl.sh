@@ -11,9 +11,20 @@ SRC_ROOT="$BUILD_ROOT/src"
 WORK_ROOT="$BUILD_ROOT/work"
 STAMP_ROOT="$BUILD_ROOT/stamps"
 
-CC="${CC:-${CROSS_PREFIX:-aarch64-linux-gnu-}gcc}"
-TARGET="${TARGET:-$($CC -dumpmachine 2>/dev/null || echo aarch64-linux-gnu)}"
-CROSS_PREFIX="${CROSS_PREFIX:-${TARGET}-}"
+DEFAULT_CC=""
+for candidate in "${CC:-}" "${TG5040_GCC_PATH:-}" aarch64-none-linux-gnu-gcc aarch64-linux-gnu-gcc; do
+  [[ -n "$candidate" ]] || continue
+  if command -v "$candidate" >/dev/null 2>&1; then
+    DEFAULT_CC="$(command -v "$candidate")"
+    break
+  fi
+done
+
+CC="${DEFAULT_CC:-${CC:-${CROSS_PREFIX:-aarch64-linux-gnu-}gcc}}"
+DEFAULT_CROSS_PREFIX="$(basename "$CC")"
+DEFAULT_CROSS_PREFIX="${DEFAULT_CROSS_PREFIX%gcc}"
+CROSS_PREFIX="${CROSS_PREFIX:-${DEFAULT_CROSS_PREFIX:-aarch64-linux-gnu-}}"
+TARGET="${TARGET:-${CROSS_PREFIX%-}}"
 AR="${AR:-${CROSS_PREFIX}ar}"
 RANLIB="${RANLIB:-${CROSS_PREFIX}ranlib}"
 SYSROOT="${SYSROOT:-$($CC -print-sysroot 2>/dev/null || true)}"

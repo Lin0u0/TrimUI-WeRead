@@ -29,6 +29,9 @@ TG5040_CURL_PREFIX ?= $(TG5040_DEPS_PREFIX)/curl
 TG5040_SDK_ROOT ?= $(abspath build/tg5040-sdk)
 TG5040_SDK_USR ?= $(TG5040_SDK_ROOT)/sdk_usr/usr
 TG5040_GCC_PATH ?=
+TG5040_CC := $(or $(strip $(TG5040_GCC_PATH)),$(shell command -v aarch64-none-linux-gnu-gcc 2>/dev/null),$(shell command -v aarch64-linux-gnu-gcc 2>/dev/null),aarch64-linux-gnu-gcc)
+TG5040_CROSS_PREFIX := $(or $(strip $(patsubst %gcc,%,$(notdir $(TG5040_CC)))),$(shell $(TG5040_CC) -dumpmachine 2>/dev/null | sed 's|$$|-|' ),aarch64-linux-gnu-)
+TG5040_TARGET := $(or $(strip $(patsubst %-,%,$(TG5040_CROSS_PREFIX))),aarch64-linux-gnu)
 
 COMMON_CFLAGS := -Wall -Wextra -Wno-unused-parameter -Ivendor
 COMMON_LDFLAGS := -lm
@@ -82,7 +85,7 @@ ifeq ($(PLATFORM),native)
   PACKAGE_NAME := $(APP_NAME)-macos.tar.gz
 else ifeq ($(PLATFORM),tg5040)
   CROSS ?= aarch64-linux-gnu-
-  CC := $(or $(strip $(TG5040_GCC_PATH)),$(shell command -v aarch64-none-linux-gnu-gcc 2>/dev/null),$(shell command -v aarch64-linux-gnu-gcc 2>/dev/null),$(CROSS)gcc)
+  CC := $(TG5040_CC)
   TG5040_RESOLVED_SYSROOT := $(strip $(shell $(CC) -print-sysroot 2>/dev/null))
   TG5040_LIBGCC_S_PATH := $(strip $(shell $(CC) -print-file-name=libgcc_s.so.1 2>/dev/null))
   SDL_CFLAGS ?= -I$(TG5040_SDK_USR)/include/SDL2 -D_REENTRANT
@@ -174,7 +177,7 @@ tg5040-sdk:
 	./scripts/bootstrap_tg5040_sdk.sh "$(TG5040_SDK_ROOT)"
 
 tg5040-libcurl:
-	./scripts/build_tg5040_libcurl.sh "$(TG5040_DEPS_PREFIX)"
+	CC="$(TG5040_CC)" TARGET="$(TG5040_TARGET)" CROSS_PREFIX="$(TG5040_CROSS_PREFIX)" ./scripts/build_tg5040_libcurl.sh "$(TG5040_DEPS_PREFIX)"
 
 tg5040-bootstrap: tg5040-sdk tg5040-libcurl
 
@@ -293,6 +296,9 @@ print-config:
 	@echo "CURL_CFLAGS=$(CURL_CFLAGS)"
 	@echo "CURL_LIBS=$(CURL_LIBS)"
 	@echo "TG5040_SDK_USR=$(TG5040_SDK_USR)"
+	@echo "TG5040_CC=$(TG5040_CC)"
+	@echo "TG5040_CROSS_PREFIX=$(TG5040_CROSS_PREFIX)"
+	@echo "TG5040_TARGET=$(TG5040_TARGET)"
 	@echo "APP_VERSION=$(APP_VERSION)"
 
 clean:
