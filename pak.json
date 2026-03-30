@@ -1,0 +1,13 @@
+{
+  "name": "WeRead",
+  "version": "@VERSION@",
+  "type": "TOOL",
+  "description": "A native WeRead client for TrimUI handhelds.",
+  "author": "Lin0u0",
+  "repo_url": "https://github.com/Lin0u0/TrimUI-WeRead",
+  "release_filename": "WeRead.pakz",
+  "platforms": [
+    "tg5040"
+  ],
+  "launch": "launch.sh"
+}
