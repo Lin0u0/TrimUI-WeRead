@@ -25,11 +25,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
+            xz-utils \
+            zip \
             libsdl2-dev \
             libsdl2-ttf-dev \
             libsdl2-image-dev \
             libcurl4-openssl-dev
+
+      - name: Install TG5040 toolchain
+        run: |
+          ./scripts/setup_tg5040_toolchain.sh "$GITHUB_WORKSPACE/build/tg5040-toolchain"
+          echo "$GITHUB_WORKSPACE/build/tg5040-toolchain/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu/bin" >> "$GITHUB_PATH"
 
       - name: Bootstrap TG5040 SDK
         run: make tg5040-bootstrap
@@ -43,6 +49,7 @@ jobs:
           name: trimui-release
           path: |
             dist/WeRead-nextui.tar.gz
+            dist/WeRead.pakz
             dist/WeRead-stock-app.tar.gz
             dist/WeRead-crossmix.tar.gz
           if-no-files-found: error
@@ -89,6 +96,7 @@ jobs:
           generate_release_notes: true
           files: |
             dist/WeRead-nextui.tar.gz
+            dist/WeRead.pakz
             dist/WeRead-stock-app.tar.gz
             dist/WeRead-crossmix.tar.gz
             dist/WeRead-macos.tar.gz

@@ -1,6 +1,7 @@
 PLATFORM ?= native
 
 APP_NAME := WeRead
+APP_VERSION := $(strip $(shell cat VERSION 2>/dev/null || printf '0.1.0'))
 TARGET := weread
 DIST_DIR := dist
 BUILD_DIR := build/$(PLATFORM)
@@ -81,10 +82,11 @@ ifeq ($(PLATFORM),native)
   PACKAGE_NAME := $(APP_NAME)-macos.tar.gz
 else ifeq ($(PLATFORM),tg5040)
   CROSS ?= aarch64-linux-gnu-
-  CC := $(if $(strip $(TG5040_GCC_PATH)),$(TG5040_GCC_PATH),$(CROSS)gcc)
+  CC := $(or $(strip $(TG5040_GCC_PATH)),$(shell command -v aarch64-none-linux-gnu-gcc 2>/dev/null),$(shell command -v aarch64-linux-gnu-gcc 2>/dev/null),$(CROSS)gcc)
   TG5040_RESOLVED_SYSROOT := $(strip $(shell $(CC) -print-sysroot 2>/dev/null))
+  TG5040_LIBGCC_S_PATH := $(strip $(shell $(CC) -print-file-name=libgcc_s.so.1 2>/dev/null))
   SDL_CFLAGS ?= -I$(TG5040_SDK_USR)/include/SDL2 -D_REENTRANT
-  TG5040_RPATH_LINKS := -Wl,-rpath-link,$(TG5040_SDK_USR)/lib
+  TG5040_RPATH_LINKS :=
   ifneq ($(TG5040_RESOLVED_SYSROOT),)
     TG5040_RPATH_LINKS += \
       -Wl,-rpath-link,$(TG5040_RESOLVED_SYSROOT)/lib \
@@ -196,6 +198,7 @@ package-nextui: tg5040-bootstrap
 	$(MAKE) PLATFORM=tg5040 all
 	@test -f "$(ASSET_FONT)" || { echo "missing font asset: $(ASSET_FONT)" >&2; exit 1; }
 	@test -f "$(ASSET_ICON)" || { echo "missing icon asset: $(ASSET_ICON)" >&2; exit 1; }
+	@test -x "$(shell command -v zip 2>/dev/null)" || { echo "missing zip command" >&2; exit 1; }
 	@rm -rf "$(STAGE_ROOT)/nextui"
 	@mkdir -p "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/bin/tg5040"
 	@mkdir -p "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/lib/tg5040"
@@ -207,12 +210,16 @@ package-nextui: tg5040-bootstrap
 	cp "$(ASSET_FONT)" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/res/fonts/SourceHanSerifSC-Regular.otf"
 	cp "$(ASSET_CACERT)" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/res/cacert.pem"
 	cp "$(TARGET_PATH)" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/bin/tg5040/$(TARGET)"
+	sed 's/@VERSION@/$(APP_VERSION)/g' packaging/nextui/pak.json > "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/pak.json"
 	chmod +x "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/launch.sh" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/bin/tg5040/$(TARGET)"
 	@for lib in $(TG5040_RUNTIME_LIBS); do \
 		cp -aL "$(TG5040_SDK_USR)/lib/$$lib" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/lib/tg5040/"; \
 	done
-	cp -aL "$(shell $(CC) -print-sysroot 2>/dev/null)/lib/libgcc_s.so.1" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/lib/tg5040/libgcc_s.so.1"
+	@test -f "$(TG5040_LIBGCC_S_PATH)" || { echo "missing libgcc_s.so.1 for $(CC)" >&2; exit 1; }
+	cp -aL "$(TG5040_LIBGCC_S_PATH)" "$(STAGE_ROOT)/nextui/Tools/tg5040/WeRead.pak/lib/tg5040/libgcc_s.so.1"
 	tar -C "$(STAGE_ROOT)/nextui" -czf "$(DIST_DIR)/$(APP_NAME)-nextui.tar.gz" Tools
+	rm -f "$(DIST_DIR)/$(APP_NAME).pakz"
+	cd "$(STAGE_ROOT)/nextui" && zip -qr "$(abspath $(DIST_DIR))/$(APP_NAME).pakz" Tools
 
 package-stock: tg5040-bootstrap
 	@rm -rf build/tg5040
@@ -235,7 +242,8 @@ package-stock: tg5040-bootstrap
 	@for lib in $(TG5040_RUNTIME_LIBS); do \
 		cp -aL "$(TG5040_SDK_USR)/lib/$$lib" "$(STAGE_ROOT)/stock/Apps/WeRead/lib/tg5040/"; \
 	done
-	cp -aL "$(shell $(CC) -print-sysroot 2>/dev/null)/lib/libgcc_s.so.1" "$(STAGE_ROOT)/stock/Apps/WeRead/lib/tg5040/libgcc_s.so.1"
+	@test -f "$(TG5040_LIBGCC_S_PATH)" || { echo "missing libgcc_s.so.1 for $(CC)" >&2; exit 1; }
+	cp -aL "$(TG5040_LIBGCC_S_PATH)" "$(STAGE_ROOT)/stock/Apps/WeRead/lib/tg5040/libgcc_s.so.1"
 	tar -C "$(STAGE_ROOT)/stock" -czf "$(DIST_DIR)/$(APP_NAME)-stock-app.tar.gz" Apps
 
 package-crossmix: tg5040-bootstrap
@@ -257,7 +265,8 @@ package-crossmix: tg5040-bootstrap
 	@for lib in $(TG5040_RUNTIME_LIBS); do \
 		cp -aL "$(TG5040_SDK_USR)/lib/$$lib" "$(STAGE_ROOT)/crossmix/Apps/WeRead/lib/tg5040/"; \
 	done
-	cp -aL "$(shell $(CC) -print-sysroot 2>/dev/null)/lib/libgcc_s.so.1" "$(STAGE_ROOT)/crossmix/Apps/WeRead/lib/tg5040/libgcc_s.so.1"
+	@test -f "$(TG5040_LIBGCC_S_PATH)" || { echo "missing libgcc_s.so.1 for $(CC)" >&2; exit 1; }
+	cp -aL "$(TG5040_LIBGCC_S_PATH)" "$(STAGE_ROOT)/crossmix/Apps/WeRead/lib/tg5040/libgcc_s.so.1"
 	tar -C "$(STAGE_ROOT)/crossmix" -czf "$(DIST_DIR)/$(APP_NAME)-crossmix.tar.gz" Apps
 
 macos-release:
@@ -284,6 +293,7 @@ print-config:
 	@echo "CURL_CFLAGS=$(CURL_CFLAGS)"
 	@echo "CURL_LIBS=$(CURL_LIBS)"
 	@echo "TG5040_SDK_USR=$(TG5040_SDK_USR)"
+	@echo "APP_VERSION=$(APP_VERSION)"
 
 clean:
 	rm -rf build

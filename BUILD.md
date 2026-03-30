@@ -12,7 +12,7 @@ This repo expects the shared runtime assets to live in:
 - `make macos-release`
   - Builds the native macOS test package at `dist/WeRead-macos.tar.gz`
 - `make nextui-release`
-  - Builds the NextUI package at `dist/WeRead-nextui.tar.gz`
+  - Builds the NextUI packages at `dist/WeRead-nextui.tar.gz` and `dist/WeRead.pakz`
 - `make stock-release`
   - Builds the TrimUI stock OS app package at `dist/WeRead-stock-app.tar.gz`
 - `make package-all`
