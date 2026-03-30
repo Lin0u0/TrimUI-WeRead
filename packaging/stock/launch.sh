@@ -23,7 +23,7 @@ cp "$APP_DIR/bin/tg5040/weread" /tmp/weread
 chmod +x /tmp/weread
 
 /tmp/weread \
-  --font "$APP_DIR/res/fonts/SourceHanSerifSC-Regular.otf" \
+  --font "/usr/trimui/res/regular.ttf" \
   --data "$DATA_DIR" \
   --cafile "$APP_DIR/res/cacert.pem" \
   --platform tg5040

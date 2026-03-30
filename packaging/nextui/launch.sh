@@ -14,7 +14,7 @@ exec > "$LOGS_PATH/$PAK_NAME.txt" 2>&1
 chmod +x "$PAK_DIR/bin/$PLATFORM/"*
 
 weread \
-  --font "$PAK_DIR/res/fonts/SourceHanSerifSC-Regular.otf" \
+  --font "/usr/trimui/res/regular.ttf" \
   --data "$HOME" \
   --cafile "$PAK_DIR/res/cacert.pem" \
   --platform "$PLATFORM"

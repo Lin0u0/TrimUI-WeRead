@@ -112,6 +112,7 @@ typedef struct {
     int session_ok;
     int running;
     int completed;
+    int poor_network;
 } StartupState;
 
 typedef struct {
@@ -126,6 +127,7 @@ typedef struct {
     int running;
     int ready;
     int failed;
+    int poor_network;
     ReaderDocument doc;
 } ReaderOpenState;
 
@@ -1535,6 +1537,39 @@ static void render_login(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     }
 }
 
+static void render_poor_network_toast(SDL_Renderer *renderer, TTF_Font *body_font,
+                                      Uint32 toast_until, const UiLayout *layout) {
+    Uint32 now = SDL_GetTicks();
+    const char *msg = "Poor network";
+    int tw = 0, th = 0;
+    int pad_x = 16, pad_y = 8;
+    int canvas_w = layout ? layout->canvas_w : UI_CANVAS_WIDTH;
+    SDL_Rect bg;
+    Uint8 alpha;
+    Uint32 remaining;
+
+    if (!body_font || now >= toast_until) {
+        return;
+    }
+
+    remaining = toast_until - now;
+    alpha = remaining < 500 ? (Uint8)(remaining * 255 / 500) : 200;
+
+    TTF_SizeUTF8(body_font, msg, &tw, &th);
+    bg.w = tw + pad_x * 2;
+    bg.h = th + pad_y * 2;
+    bg.x = (canvas_w - bg.w) / 2;
+    bg.y = 16;
+
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, alpha);
+    SDL_RenderFillRect(renderer, &bg);
+    {
+        SDL_Color white = { 255, 255, 255, alpha };
+        draw_text(renderer, body_font, bg.x + pad_x, bg.y + pad_y, white, msg);
+    }
+}
+
 static void render_loading(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
                            const char *title, const char *status, const UiLayout *layout) {
     const UiTheme *theme = ui_current_theme();
@@ -1956,6 +1991,7 @@ static int startup_thread(void *userdata) {
     }
     snprintf(ctx.ca_file, sizeof(ctx.ca_file), "%s", state->ca_file);
     state->session_ok = auth_check_session(&ctx, &state->shelf_nuxt);
+    state->poor_network = ctx.poor_network;
     api_cleanup(&ctx);
     state->running = 0;
     state->completed = 1;
@@ -2133,6 +2169,7 @@ static int reader_open_thread(void *userdata) {
         state->failed = 1;
     }
 
+    state->poor_network = ctx.poor_network;
     api_cleanup(&ctx);
     state->running = 0;
     return state->ready ? 0 : -1;
@@ -3373,6 +3410,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     UiRotation rotation = UI_ROTATE_LANDSCAPE;
     UiLayout current_layout = ui_layout_for_rotation(UI_ROTATE_LANDSCAPE);
     UiRepeatState repeat_state;
+    Uint32 poor_network_toast_until = 0;
     int rc = -1;
 
     memset(&session, 0, sizeof(session));
@@ -3565,8 +3603,23 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         begin_login_flow(ctx, &login_start, &login_thread, &view,
                                          status, sizeof(status), qr_path);
                     }
-                } else if (view == VIEW_BOOTSTRAP || view == VIEW_OPENING) {
-                    (void)event;
+                } else if (view == VIEW_BOOTSTRAP) {
+                    if (ui_event_is_confirm(&event, tg5040_input) &&
+                        !startup_state.running && !startup_thread_handle) {
+                        snprintf(loading_title, sizeof(loading_title), "WeRead");
+                        snprintf(status, sizeof(status), "Retrying...");
+                        begin_startup_refresh(ctx, &startup_state, &startup_thread_handle);
+                    }
+                } else if (view == VIEW_OPENING) {
+                    if (ui_event_is_confirm(&event, tg5040_input) &&
+                        !reader_open.running && !reader_open_thread_handle &&
+                        reader_open.source_target[0]) {
+                        snprintf(status, sizeof(status), "Retrying...");
+                        begin_reader_open(ctx, &reader_open, &reader_open_thread_handle,
+                                          reader_open.source_target,
+                                          reader_open.book_id[0] ? reader_open.book_id : NULL,
+                                          reader_open.font_size);
+                    }
                 } else if (view == VIEW_READER) {
                     int total_pages = reader_total_pages(&reader_state);
                     reader_progress_note_activity(&reader_state, SDL_GetTicks());
@@ -3856,7 +3909,10 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                 snprintf(status, sizeof(status), "Generating QR code...");
                 begin_login_flow(ctx, &login_start, &login_thread, &view, status, sizeof(status), qr_path);
             } else if (!shelf_nuxt && view != VIEW_READER && view != VIEW_LOGIN) {
-                snprintf(status, sizeof(status), "Unable to load the library. Check the network.");
+                snprintf(status, sizeof(status), "Network error. Press A to retry.");
+            }
+            if (startup_state.poor_network) {
+                poor_network_toast_until = SDL_GetTicks() + 3000;
             }
             startup_state_reset(&startup_state);
         }
@@ -3864,6 +3920,9 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
         if (reader_open_thread_handle && !reader_open.running) {
             SDL_WaitThread(reader_open_thread_handle, NULL);
             reader_open_thread_handle = NULL;
+            if (reader_open.poor_network) {
+                poor_network_toast_until = SDL_GetTicks() + 3000;
+            }
             reader_state.content_font_size = reader_open.content_font_size;
             if (reader_open.ready &&
                 reader_view_adopt_document(body_font, &reader_open.doc,
@@ -3885,13 +3944,24 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                     view = VIEW_SHELF;
                     snprintf(shelf_status, sizeof(shelf_status),
                              "Failed to open the selected book.");
+                    reader_open_state_reset(&reader_open);
                 } else {
+                    char retry_target[2048];
+                    char retry_book_id[256];
+                    int retry_font_size = reader_open.font_size;
+                    ui_copy_string(retry_target, sizeof(retry_target), reader_open.source_target);
+                    ui_copy_string(retry_book_id, sizeof(retry_book_id), reader_open.book_id);
+                    reader_open_state_reset(&reader_open);
+                    ui_copy_string(reader_open.source_target, sizeof(reader_open.source_target), retry_target);
+                    ui_copy_string(reader_open.book_id, sizeof(reader_open.book_id), retry_book_id);
+                    reader_open.font_size = retry_font_size;
                     view = VIEW_OPENING;
                     snprintf(status, sizeof(status),
-                             "Failed to open the selected book.");
+                             "Failed to open. Press A to retry.");
                 }
+            } else {
+                reader_open_state_reset(&reader_open);
             }
-            reader_open_state_reset(&reader_open);
         }
 
         if (view == VIEW_LOGIN && login_start.running == 0 && login_thread) {
@@ -3933,7 +4003,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                 login_poll_thread_handle = NULL;
                 if (login_poll.completed) {
                     cJSON_Delete(shelf_nuxt);
-                    shelf_nuxt = shelf_load(ctx, 0, NULL);
+                    shelf_nuxt = shelf_load(ctx, 1, NULL);
                     shelf_cover_download_stop(&shelf_cover_download, &shelf_cover_download_thread_handle);
                     shelf_cover_cache_build(ctx, shelf_nuxt, &shelf_covers);
                     selected = 0;
@@ -3963,6 +4033,13 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
         } else {
             render_shelf(renderer, title_font, body_font, ctx, shelf_nuxt, &shelf_covers,
                          selected, shelf_start, shelf_status, &current_layout);
+        }
+        if (ctx->poor_network) {
+            ctx->poor_network = 0;
+            poor_network_toast_until = SDL_GetTicks() + 3000;
+        }
+        if (poor_network_toast_until > SDL_GetTicks()) {
+            render_poor_network_toast(renderer, body_font, poor_network_toast_until, &current_layout);
         }
         ui_present_scene(renderer, scene_texture, rotation);
         SDL_RenderPresent(renderer);

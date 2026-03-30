@@ -5,7 +5,18 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 #include "api.h"
+
+static int is_transient_error(CURLcode code) {
+    return code == CURLE_OPERATION_TIMEDOUT ||
+           code == CURLE_COULDNT_CONNECT ||
+           code == CURLE_COULDNT_RESOLVE_HOST ||
+           code == CURLE_COULDNT_RESOLVE_PROXY ||
+           code == CURLE_GOT_NOTHING ||
+           code == CURLE_RECV_ERROR ||
+           code == CURLE_SEND_ERROR;
+}
 
 static void buf_init(Buffer *buf) {
     buf->capacity = 4096;
@@ -96,26 +107,40 @@ static void setup_curl(ApiContext *ctx, const char *url, const char *user_agent,
 }
 
 static int api_get_internal(ApiContext *ctx, const char *url, Buffer *buf, long timeout_seconds) {
-    buf_init(buf);
-    setup_curl(ctx, url, KINDLE_USER_AGENT, buf, timeout_seconds);
-    ctx->last_curl_code = curl_easy_perform(ctx->curl);
-    CURLcode res = ctx->last_curl_code;
-    if (res != CURLE_OK) {
+    long retry_timeout = timeout_seconds < 10 ? timeout_seconds : 10;
+
+    for (int attempt = 0; attempt <= 1; attempt++) {
+        buf_init(buf);
+        setup_curl(ctx, url, KINDLE_USER_AGENT, buf, attempt == 0 ? timeout_seconds : retry_timeout);
+        ctx->last_curl_code = curl_easy_perform(ctx->curl);
+        CURLcode res = ctx->last_curl_code;
+
+        if (res == CURLE_OK) {
+            long code;
+            curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &code);
+            if (code >= 200 && code < 400) {
+                if (attempt > 0) ctx->poor_network = 1;
+                return 0;
+            }
+            fprintf(stderr, "GET %s returned %ld\n", url, code);
+            api_buffer_free(buf);
+            return -1;
+        }
+
+        if (attempt == 0 && is_transient_error(res)) {
+            ctx->poor_network = 1;
+            api_buffer_free(buf);
+            sleep(1);
+            continue;
+        }
+
         if (res != CURLE_OPERATION_TIMEDOUT) {
             fprintf(stderr, "GET %s failed: %s\n", url, ctx->error_buf);
         }
         api_buffer_free(buf);
         return -1;
     }
-
-    long code;
-    curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &code);
-    if (code < 200 || code >= 400) {
-        fprintf(stderr, "GET %s returned %ld\n", url, code);
-        api_buffer_free(buf);
-        return -1;
-    }
-    return 0;
+    return -1;
 }
 
 int api_get(ApiContext *ctx, const char *url, Buffer *buf) {
@@ -123,61 +148,83 @@ int api_get(ApiContext *ctx, const char *url, Buffer *buf) {
 }
 
 int api_get_with_ua(ApiContext *ctx, const char *url, const char *user_agent, Buffer *buf) {
-    buf_init(buf);
-    setup_curl(ctx, url, user_agent, buf, 30L);
-    ctx->last_curl_code = curl_easy_perform(ctx->curl);
-    if (ctx->last_curl_code != CURLE_OK) {
+    for (int attempt = 0; attempt <= 1; attempt++) {
+        buf_init(buf);
+        setup_curl(ctx, url, user_agent, buf, attempt == 0 ? 30L : 10L);
+        ctx->last_curl_code = curl_easy_perform(ctx->curl);
+
+        if (ctx->last_curl_code == CURLE_OK) {
+            long code;
+            curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &code);
+            if (code >= 200 && code < 400) {
+                if (attempt > 0) ctx->poor_network = 1;
+                return 0;
+            }
+            fprintf(stderr, "GET %s returned %ld\n", url, code);
+            api_buffer_free(buf);
+            return -1;
+        }
+
+        if (attempt == 0 && is_transient_error(ctx->last_curl_code)) {
+            ctx->poor_network = 1;
+            api_buffer_free(buf);
+            sleep(1);
+            continue;
+        }
+
         if (ctx->last_curl_code != CURLE_OPERATION_TIMEDOUT) {
             fprintf(stderr, "GET %s failed: %s\n", url, ctx->error_buf);
         }
         api_buffer_free(buf);
         return -1;
     }
-
-    {
-        long code;
-        curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &code);
-        if (code < 200 || code >= 400) {
-            fprintf(stderr, "GET %s returned %ld\n", url, code);
-            api_buffer_free(buf);
-            return -1;
-        }
-    }
-
-    return 0;
+    return -1;
 }
 
 static int api_post_internal(ApiContext *ctx, const char *url, const char *body, Buffer *buf,
                              long timeout_seconds) {
-    struct curl_slist *headers = NULL;
+    long retry_timeout = timeout_seconds < 10 ? timeout_seconds : 10;
 
-    buf_init(buf);
-    setup_curl(ctx, url, KINDLE_USER_AGENT, buf, timeout_seconds);
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, "Referer: " WEREAD_BASE_URL "/");
-    headers = curl_slist_append(headers, "Origin: https://weread.qq.com");
-    curl_easy_setopt(ctx->curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(ctx->curl, CURLOPT_POSTFIELDS, body);
-    ctx->last_curl_code = curl_easy_perform(ctx->curl);
-    CURLcode res = ctx->last_curl_code;
-    curl_slist_free_all(headers);
+    for (int attempt = 0; attempt <= 1; attempt++) {
+        struct curl_slist *headers = NULL;
 
-    if (res != CURLE_OK) {
+        buf_init(buf);
+        setup_curl(ctx, url, KINDLE_USER_AGENT, buf, attempt == 0 ? timeout_seconds : retry_timeout);
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        headers = curl_slist_append(headers, "Referer: " WEREAD_BASE_URL "/");
+        headers = curl_slist_append(headers, "Origin: https://weread.qq.com");
+        curl_easy_setopt(ctx->curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(ctx->curl, CURLOPT_POSTFIELDS, body);
+        ctx->last_curl_code = curl_easy_perform(ctx->curl);
+        CURLcode res = ctx->last_curl_code;
+        curl_slist_free_all(headers);
+
+        if (res == CURLE_OK) {
+            long code;
+            curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &code);
+            if (code >= 200 && code < 400) {
+                if (attempt > 0) ctx->poor_network = 1;
+                return 0;
+            }
+            fprintf(stderr, "POST %s returned %ld\n", url, code);
+            api_buffer_free(buf);
+            return -1;
+        }
+
+        if (attempt == 0 && is_transient_error(res)) {
+            ctx->poor_network = 1;
+            api_buffer_free(buf);
+            sleep(1);
+            continue;
+        }
+
         if (res != CURLE_OPERATION_TIMEDOUT) {
             fprintf(stderr, "POST %s failed: %s\n", url, ctx->error_buf);
         }
         api_buffer_free(buf);
         return -1;
     }
-
-    long code;
-    curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &code);
-    if (code < 200 || code >= 400) {
-        fprintf(stderr, "POST %s returned %ld\n", url, code);
-        api_buffer_free(buf);
-        return -1;
-    }
-    return 0;
+    return -1;
 }
 
 int api_post(ApiContext *ctx, const char *url, const char *body, Buffer *buf) {
@@ -189,16 +236,29 @@ int api_post_timeout(ApiContext *ctx, const char *url, const char *body, Buffer 
 }
 
 int api_download(ApiContext *ctx, const char *url, Buffer *buf) {
-    buf_init(buf);
-    setup_curl(ctx, url, KINDLE_USER_AGENT, buf, 30L);
-    ctx->last_curl_code = curl_easy_perform(ctx->curl);
-    CURLcode res = ctx->last_curl_code;
-    if (res != CURLE_OK) {
+    for (int attempt = 0; attempt <= 1; attempt++) {
+        buf_init(buf);
+        setup_curl(ctx, url, KINDLE_USER_AGENT, buf, attempt == 0 ? 30L : 10L);
+        ctx->last_curl_code = curl_easy_perform(ctx->curl);
+        CURLcode res = ctx->last_curl_code;
+
+        if (res == CURLE_OK) {
+            if (attempt > 0) ctx->poor_network = 1;
+            return 0;
+        }
+
+        if (attempt == 0 && is_transient_error(res)) {
+            ctx->poor_network = 1;
+            api_buffer_free(buf);
+            sleep(1);
+            continue;
+        }
+
         fprintf(stderr, "Download %s failed: %s\n", url, ctx->error_buf);
         api_buffer_free(buf);
         return -1;
     }
-    return 0;
+    return -1;
 }
 
 static const char *skip_ws(const char *p, const char *end) {
