@@ -281,3 +281,28 @@ int state_load_reader_position_by_book_id(ApiContext *ctx, const char *book_id,
     cJSON_Delete(positions);
     return 0;
 }
+
+int state_save_dark_mode(ApiContext *ctx, int dark_mode) {
+    cJSON *json = cJSON_CreateObject();
+    int rc;
+
+    if (!json) {
+        return -1;
+    }
+    cJSON_AddNumberToObject(json, "darkMode", dark_mode ? 1 : 0);
+    rc = state_write_json(ctx, "preferences.json", json);
+    cJSON_Delete(json);
+    return rc;
+}
+
+int state_load_dark_mode(ApiContext *ctx) {
+    cJSON *json = state_read_json(ctx, "preferences.json");
+    int value;
+
+    if (!json) {
+        return 0;
+    }
+    value = json_get_int(json, "darkMode", 0);
+    cJSON_Delete(json);
+    return value;
+}

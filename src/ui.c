@@ -50,6 +50,8 @@ typedef enum {
 typedef struct {
     int canvas_w;
     int canvas_h;
+    int content_x;
+    int content_w;
     int reader_content_w;
     int reader_content_h;
 } UiLayout;
@@ -282,8 +284,14 @@ static UiLayout ui_layout_for_rotation(UiRotation rotation) {
 
     layout.canvas_w = is_portrait ? UI_CANVAS_PORTRAIT_WIDTH : UI_CANVAS_WIDTH;
     layout.canvas_h = is_portrait ? UI_CANVAS_PORTRAIT_HEIGHT : UI_CANVAS_HEIGHT;
-    layout.reader_content_w = layout.canvas_w - 64;
+    layout.content_x = 0;
+    layout.content_w = layout.canvas_w;
+    layout.reader_content_w = layout.content_w - 64;
     layout.reader_content_h = layout.canvas_h - 128;
+    if (layout.content_w < 320) {
+        layout.content_w = 320;
+        layout.content_x = (layout.canvas_w - layout.content_w) / 2;
+    }
     if (layout.reader_content_w < 320) {
         layout.reader_content_w = 320;
     }
@@ -323,6 +331,75 @@ static void reader_open_catalog(ApiContext *ctx, ReaderViewState *state, char *s
 static int reader_expand_catalog_for_selection(ApiContext *ctx, ReaderViewState *state,
                                                int direction, char *status, size_t status_size);
 static int reader_find_page_for_offset(const ReaderViewState *state, int target_offset);
+
+typedef struct {
+    SDL_Color ink;
+    SDL_Color muted;
+    SDL_Color accent;
+    SDL_Color line;
+    SDL_Color dim;
+    Uint8 bg_r, bg_g, bg_b;
+    Uint8 header_r, header_g, header_b;
+    Uint8 card_r, card_g, card_b;
+    Uint8 qr_slot_r, qr_slot_g, qr_slot_b;
+    Uint8 cover_bg_r, cover_bg_g, cover_bg_b;
+    Uint8 cover_empty_r, cover_empty_g, cover_empty_b;
+    Uint8 shadow_r, shadow_g, shadow_b, shadow_a;
+    Uint8 selection_border_r, selection_border_g, selection_border_b;
+    Uint8 catalog_panel_r, catalog_panel_g, catalog_panel_b;
+    Uint8 catalog_header_r, catalog_header_g, catalog_header_b;
+    Uint8 catalog_highlight_r, catalog_highlight_g, catalog_highlight_b;
+    Uint8 catalog_current_r, catalog_current_g, catalog_current_b;
+    Uint8 backdrop_r, backdrop_g, backdrop_b, backdrop_a;
+} UiTheme;
+
+static const UiTheme ui_theme_light = {
+    .ink    = { 30, 29, 26, 255 },
+    .muted  = { 116, 106, 88, 255 },
+    .accent = { 191, 155, 76, 255 },
+    .line   = { 221, 210, 188, 255 },
+    .dim    = { 118, 108, 92, 255 },
+    .bg_r = 246, .bg_g = 242, .bg_b = 230,
+    .header_r = 248, .header_g = 244, .header_b = 234,
+    .card_r = 252, .card_g = 249, .card_b = 242,
+    .qr_slot_r = 245, .qr_slot_g = 240, .qr_slot_b = 229,
+    .cover_bg_r = 236, .cover_bg_g = 228, .cover_bg_b = 204,
+    .cover_empty_r = 222, .cover_empty_g = 212, .cover_empty_b = 188,
+    .shadow_r = 201, .shadow_g = 191, .shadow_b = 166, .shadow_a = 180,
+    .selection_border_r = 214, .selection_border_g = 189, .selection_border_b = 121,
+    .catalog_panel_r = 250, .catalog_panel_g = 246, .catalog_panel_b = 237,
+    .catalog_header_r = 244, .catalog_header_g = 239, .catalog_header_b = 228,
+    .catalog_highlight_r = 228, .catalog_highlight_g = 216, .catalog_highlight_b = 187,
+    .catalog_current_r = 242, .catalog_current_g = 236, .catalog_current_b = 223,
+    .backdrop_r = 18, .backdrop_g = 16, .backdrop_b = 12, .backdrop_a = 108,
+};
+
+static const UiTheme ui_theme_dark = {
+    .ink    = { 210, 206, 197, 255 },
+    .muted  = { 148, 140, 124, 255 },
+    .accent = { 191, 155, 76, 255 },
+    .line   = { 58, 54, 46, 255 },
+    .dim    = { 120, 112, 98, 255 },
+    .bg_r = 30, .bg_g = 28, .bg_b = 24,
+    .header_r = 36, .header_g = 34, .header_b = 28,
+    .card_r = 42, .card_g = 39, .card_b = 33,
+    .qr_slot_r = 48, .qr_slot_g = 44, .qr_slot_b = 38,
+    .cover_bg_r = 50, .cover_bg_g = 46, .cover_bg_b = 38,
+    .cover_empty_r = 58, .cover_empty_g = 54, .cover_empty_b = 46,
+    .shadow_r = 10, .shadow_g = 9, .shadow_b = 8, .shadow_a = 200,
+    .selection_border_r = 180, .selection_border_g = 155, .selection_border_b = 90,
+    .catalog_panel_r = 38, .catalog_panel_g = 35, .catalog_panel_b = 30,
+    .catalog_header_r = 44, .catalog_header_g = 40, .catalog_header_b = 34,
+    .catalog_highlight_r = 56, .catalog_highlight_g = 52, .catalog_highlight_b = 42,
+    .catalog_current_r = 48, .catalog_current_g = 44, .catalog_current_b = 36,
+    .backdrop_r = 0, .backdrop_g = 0, .backdrop_b = 0, .backdrop_a = 160,
+};
+
+static int ui_dark_mode = 0;
+
+static const UiTheme *ui_current_theme(void) {
+    return ui_dark_mode ? &ui_theme_dark : &ui_theme_light;
+}
 
 enum {
     TG5040_JOY_B = 0,
@@ -437,6 +514,15 @@ static int ui_event_is_rotate_combo(const SDL_Event *event, int tg5040_input,
              select_pressed) ||
             (ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_SELECT) &&
              start_pressed));
+}
+
+static int ui_event_is_dark_mode_toggle(const SDL_Event *event, int tg5040_input,
+                                        int select_pressed) {
+    if (ui_event_is_keydown(event, SDLK_t)) {
+        return 1;
+    }
+    return tg5040_input && select_pressed &&
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_Y);
 }
 
 static int ui_event_is_chapter_prev(const SDL_Event *event, int tg5040_input) {
@@ -790,35 +876,40 @@ static int ui_recreate_scene_texture(SDL_Renderer *renderer, SDL_Texture **scene
 }
 
 static int ui_present_scene(SDL_Renderer *renderer, SDL_Texture *scene, UiRotation rotation) {
-    double angle = 0.0;
-    int output_w = UI_CANVAS_WIDTH;
-    int output_h = UI_CANVAS_HEIGHT;
-    SDL_Rect dst = { 0, 0, 0, 0 };
+    int output_w, output_h;
+    SDL_Rect dst;
+    SDL_Point center;
 
     if (!renderer || !scene) {
         return -1;
     }
 
-    SDL_GetRendererOutputSize(renderer, &output_w, &output_h);
-    switch (rotation) {
-    case UI_ROTATE_LEFT_PORTRAIT:
-        angle = 270.0;
-        break;
-    case UI_ROTATE_RIGHT_PORTRAIT:
-        angle = 90.0;
-        break;
-    case UI_ROTATE_LANDSCAPE:
-    default:
-        angle = 0.0;
-        break;
-    }
-    dst.w = output_w;
-    dst.h = output_h;
-
     SDL_SetRenderTarget(renderer, NULL);
-    SDL_SetRenderDrawColor(renderer, 20, 18, 14, 255);
+    SDL_GetRendererOutputSize(renderer, &output_w, &output_h);
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
-    return SDL_RenderCopyEx(renderer, scene, NULL, &dst, angle, NULL, SDL_FLIP_NONE);
+
+    if (rotation == UI_ROTATE_LANDSCAPE) {
+        return SDL_RenderCopy(renderer, scene, NULL, NULL);
+    }
+
+    /* Portrait: scene texture is output_h x output_w (e.g. 768x1024).
+     * Place dst at (0,0) with those dimensions and use a custom rotation
+     * center so the rotated result fills the screen exactly. */
+    dst.x = 0;
+    dst.y = 0;
+    dst.w = output_h;
+    dst.h = output_w;
+
+    if (rotation == UI_ROTATE_RIGHT_PORTRAIT) {
+        center.x = output_w / 2;
+        center.y = output_w / 2;
+        return SDL_RenderCopyEx(renderer, scene, NULL, &dst, 90.0, &center, SDL_FLIP_NONE);
+    }
+    /* UI_ROTATE_LEFT_PORTRAIT */
+    center.x = output_h / 2;
+    center.y = output_h / 2;
+    return SDL_RenderCopyEx(renderer, scene, NULL, &dst, 270.0, &center, SDL_FLIP_NONE);
 }
 
 static void reader_format_chapter_heading(const ReaderViewState *state, char *out, size_t out_size) {
@@ -1362,9 +1453,10 @@ static void draw_qr(SDL_Renderer *renderer, const char *path, const SDL_Rect *sl
 
 static void render_login(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
                          AuthSession *session, const char *status, const UiLayout *layout) {
-    SDL_Color ink = { 32, 31, 28, 255 };
-    SDL_Color muted = { 116, 106, 88, 255 };
-    SDL_Color line = { 221, 212, 190, 255 };
+    const UiTheme *theme = ui_current_theme();
+    SDL_Color ink = theme->ink;
+    SDL_Color muted = theme->muted;
+    SDL_Color line = theme->line;
     SDL_Rect header_band;
     SDL_Rect header_line;
     SDL_Rect footer_line;
@@ -1372,6 +1464,8 @@ static void render_login(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     SDL_Rect qr_slot;
     int canvas_w = layout ? layout->canvas_w : UI_CANVAS_WIDTH;
     int canvas_h = layout ? layout->canvas_h : UI_CANVAS_HEIGHT;
+    int cw = layout ? layout->content_w : canvas_w;
+    int cx = layout ? layout->content_x : 0;
     const int header_h = 60;
     const int footer_h = 56;
     const int margin = 32;
@@ -1380,7 +1474,7 @@ static void render_login(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     int content_h = content_bottom - content_top;
     int title_y;
     int footer_text_y;
-    int card_w = canvas_w >= 900 ? 500 : canvas_w - 88;
+    int card_w = cw >= 900 ? 500 : cw - 88;
     int card_h = canvas_h >= 900 ? 600 : content_h - 44;
     int qr_size = card_w - 120;
     int status_width = 0;
@@ -1403,26 +1497,26 @@ static void render_login(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     header_band = (SDL_Rect){ 0, 0, canvas_w, header_h };
     header_line = (SDL_Rect){ 0, header_h, canvas_w, 1 };
     footer_line = (SDL_Rect){ 0, canvas_h - footer_h, canvas_w, 1 };
-    card = (SDL_Rect){ (canvas_w - card_w) / 2, content_top + (content_h - card_h) / 2, card_w, card_h };
+    card = (SDL_Rect){ cx + (cw - card_w) / 2, content_top + (content_h - card_h) / 2, card_w, card_h };
     qr_slot = (SDL_Rect){ card.x + (card.w - qr_size) / 2, card.y + 70, qr_size, qr_size };
-    title_y = header_h - 10 - (title_font ? TTF_FontHeight(title_font) : 36);
+    title_y = (header_h - (title_font ? TTF_FontHeight(title_font) : 36)) / 2;
     footer_text_y = footer_line.y + (footer_h - (body_font ? TTF_FontHeight(body_font) : 28)) / 2;
 
-    SDL_SetRenderDrawColor(renderer, 244, 239, 226, 255);
+    SDL_SetRenderDrawColor(renderer, theme->bg_r, theme->bg_g, theme->bg_b, 255);
     SDL_RenderClear(renderer);
 
-    SDL_SetRenderDrawColor(renderer, 248, 244, 234, 255);
+    SDL_SetRenderDrawColor(renderer, theme->header_r, theme->header_g, theme->header_b, 255);
     SDL_RenderFillRect(renderer, &header_band);
     SDL_SetRenderDrawColor(renderer, line.r, line.g, line.b, line.a);
     SDL_RenderFillRect(renderer, &header_line);
     SDL_RenderFillRect(renderer, &footer_line);
-    SDL_SetRenderDrawColor(renderer, 252, 249, 242, 255);
+    SDL_SetRenderDrawColor(renderer, theme->card_r, theme->card_g, theme->card_b, 255);
     SDL_RenderFillRect(renderer, &card);
     draw_rect_outline(renderer, &card, line, 1);
 
-    draw_text(renderer, title_font, margin, title_y, ink, "WeRead");
+    draw_text(renderer, title_font, cx + margin, title_y, ink, "WeRead");
 
-    SDL_SetRenderDrawColor(renderer, 245, 240, 229, 255);
+    SDL_SetRenderDrawColor(renderer, theme->qr_slot_r, theme->qr_slot_g, theme->qr_slot_b, 255);
     SDL_RenderFillRect(renderer, &qr_slot);
     draw_rect_outline(renderer, &qr_slot, line, 1);
 
@@ -1433,28 +1527,31 @@ static void render_login(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     if (body_font) {
         const char *status_text = (status && status[0]) ? status : "Scan QR code to sign in";
         char status_buf[256];
-        fit_text_ellipsis(body_font, status_text, canvas_w - margin * 2, status_buf, sizeof(status_buf));
+        fit_text_ellipsis(body_font, status_text, cw - margin * 2, status_buf, sizeof(status_buf));
         TTF_SizeUTF8(body_font, status_buf, &status_width, NULL);
-        if (status_width <= canvas_w - margin * 2) {
-            draw_text(renderer, body_font, (canvas_w - status_width) / 2, footer_text_y, muted, status_buf);
+        if (status_width <= cw - margin * 2) {
+            draw_text(renderer, body_font, cx + (cw - status_width) / 2, footer_text_y, muted, status_buf);
         }
     }
 }
 
 static void render_loading(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
                            const char *title, const char *status, const UiLayout *layout) {
-    SDL_Color ink = { 32, 31, 28, 255 };
-    SDL_Color muted = { 116, 106, 88, 255 };
-    SDL_Color accent = { 191, 155, 76, 255 };
+    const UiTheme *theme = ui_current_theme();
+    SDL_Color ink = theme->ink;
+    SDL_Color muted = theme->muted;
+    SDL_Color accent = theme->accent;
     int canvas_w = layout ? layout->canvas_w : UI_CANVAS_WIDTH;
     int canvas_h = layout ? layout->canvas_h : UI_CANVAS_HEIGHT;
+    int cw = layout ? layout->content_w : canvas_w;
+    int coff = layout ? layout->content_x : 0;
     int title_w = 0;
     int status_w = 0;
-    int cx = canvas_w / 2;
+    int cx = coff + cw / 2;
     int cy = canvas_h / 2 - 36;
     Uint32 tick = SDL_GetTicks() / 120;
 
-    SDL_SetRenderDrawColor(renderer, 244, 239, 226, 255);
+    SDL_SetRenderDrawColor(renderer, theme->bg_r, theme->bg_g, theme->bg_b, 255);
     SDL_RenderClear(renderer);
 
     for (int i = 0; i < 8; i++) {
@@ -1475,11 +1572,11 @@ static void render_loading(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Fon
 
     if (title_font && title && *title) {
         TTF_SizeUTF8(title_font, title, &title_w, NULL);
-        draw_text(renderer, title_font, canvas_w / 2 - title_w / 2, cy + 64, ink, title);
+        draw_text(renderer, title_font, cx - title_w / 2, cy + 64, ink, title);
     }
     if (body_font && status && *status) {
         TTF_SizeUTF8(body_font, status, &status_w, NULL);
-        draw_text(renderer, body_font, canvas_w / 2 - status_w / 2, cy + 122, muted, status);
+        draw_text(renderer, body_font, cx - status_w / 2, cy + 122, muted, status);
     }
 }
 
@@ -1500,7 +1597,10 @@ static void render_shelf_cover(SDL_Renderer *renderer, TTF_Font *body_font, SDL_
         scaled_rect.h + 12
     };
 
-    SDL_SetRenderDrawColor(renderer, 201, 191, 166, 180);
+    const UiTheme *theme = ui_current_theme();
+
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, theme->shadow_r, theme->shadow_g, theme->shadow_b, theme->shadow_a);
     SDL_Rect shadow = {
         scaled_rect.x + 8,
         scaled_rect.y + 10,
@@ -1510,17 +1610,18 @@ static void render_shelf_cover(SDL_Renderer *renderer, TTF_Font *body_font, SDL_
     SDL_RenderFillRect(renderer, &shadow);
 
     if (selected) {
-        SDL_SetRenderDrawColor(renderer, 214, 189, 121, 255);
+        SDL_SetRenderDrawColor(renderer, theme->selection_border_r, theme->selection_border_g,
+                               theme->selection_border_b, 255);
         SDL_RenderFillRect(renderer, &border);
     }
 
-    SDL_SetRenderDrawColor(renderer, 236, 228, 204, 255);
+    SDL_SetRenderDrawColor(renderer, theme->cover_bg_r, theme->cover_bg_g, theme->cover_bg_b, 255);
     SDL_RenderFillRect(renderer, &scaled_rect);
 
     if (entry && entry->texture) {
         SDL_RenderCopy(renderer, entry->texture, NULL, &scaled_rect);
     } else {
-        SDL_SetRenderDrawColor(renderer, 222, 212, 188, 255);
+        SDL_SetRenderDrawColor(renderer, theme->cover_empty_r, theme->cover_empty_g, theme->cover_empty_b, 255);
         SDL_RenderFillRect(renderer, &scaled_rect);
         draw_text(renderer, body_font, scaled_rect.x + 22, scaled_rect.y + scaled_rect.h / 2 - 10,
                   ink, "No Cover");
@@ -1535,13 +1636,15 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     const int cover_h = 382;
     const int card_gap = 36;
     const int header_h = 60;
-    const int header_text_bottom_padding = 10;
-    const int window_w = layout ? layout->canvas_w : UI_CANVAS_WIDTH;
+    const int canvas_w = layout ? layout->canvas_w : UI_CANVAS_WIDTH;
+    const int window_w = layout ? layout->content_w : canvas_w;
+    const int window_x = layout ? layout->content_x : 0;
     const int window_h = layout ? layout->canvas_h : UI_CANVAS_HEIGHT;
     const float selected_scale = 1.18f;
-    SDL_Color ink = { 28, 28, 24, 255 };
-    SDL_Color muted = { 116, 106, 88, 255 };
-    SDL_Color line = { 221, 210, 188, 255 };
+    const UiTheme *theme = ui_current_theme();
+    SDL_Color ink = theme->ink;
+    SDL_Color muted = theme->muted;
+    SDL_Color line = theme->line;
     cJSON *books = shelf_books(nuxt);
     int count = books && cJSON_IsArray(books) ? cJSON_GetArraySize(books) : 0;
     int selected_extra_w;
@@ -1559,9 +1662,9 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     char time_buf[32] = "";
     char position_buf[32];
     char title_buf[256];
-    SDL_Rect header_band = { 0, 0, window_w, header_h };
-    SDL_Rect header_line = { 0, header_h, window_w, 1 };
-    SDL_Rect footer_line = { 0, window_h - 56, window_w, 1 };
+    SDL_Rect header_band = { 0, 0, canvas_w, header_h };
+    SDL_Rect header_line = { 0, header_h, canvas_w, 1 };
+    SDL_Rect footer_line = { 0, window_h - 56, canvas_w, 1 };
     int position_width = 0;
     int position_x;
     int info_h = window_h - footer_line.y;
@@ -1579,9 +1682,9 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
         start_y = content_top;
     }
 
-    SDL_SetRenderDrawColor(renderer, 246, 242, 230, 255);
+    SDL_SetRenderDrawColor(renderer, theme->bg_r, theme->bg_g, theme->bg_b, 255);
     SDL_RenderClear(renderer);
-    SDL_SetRenderDrawColor(renderer, 248, 244, 234, 255);
+    SDL_SetRenderDrawColor(renderer, theme->header_r, theme->header_g, theme->header_b, 255);
     SDL_RenderFillRect(renderer, &header_band);
     SDL_SetRenderDrawColor(renderer, line.r, line.g, line.b, line.a);
     SDL_RenderFillRect(renderer, &header_line);
@@ -1591,13 +1694,12 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     if (local_tm) {
         strftime(time_buf, sizeof(time_buf), "%H:%M", local_tm);
     }
-    title_y = header_h - header_text_bottom_padding -
-              (title_font ? TTF_FontHeight(title_font) : 36);
+    title_y = (header_h - (title_font ? TTF_FontHeight(title_font) : 36)) / 2;
 
     if (count == 0) {
         int empty_w = 0;
         TTF_SizeUTF8(title_font, "Shelf Empty", &empty_w, NULL);
-        draw_text(renderer, title_font, window_w / 2 - empty_w / 2, window_h / 2 - 40, ink, "Shelf Empty");
+        draw_text(renderer, title_font, window_x + window_w / 2 - empty_w / 2, window_h / 2 - 40, ink, "Shelf Empty");
         return;
     }
 
@@ -1607,7 +1709,7 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     fit_text_ellipsis(title_font, selected_title ? selected_title : "WeRead",
                       window_w - margin * 2 - 140,
                       title_buf, sizeof(title_buf));
-    draw_text(renderer, title_font, margin, title_y, ink, title_buf);
+    draw_text(renderer, title_font, window_x + margin, title_y, ink, title_buf);
 
     for (int i = selected - 2; i <= selected + 2; i++) {
         cJSON *book = cJSON_GetArrayItem(books, i);
@@ -1626,13 +1728,13 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
         title = json_get_string(book, "title");
         card_index = i - selected;
         if (card_index == 0) {
-            cover_rect.x = (window_w - cover_w) / 2;
+            cover_rect.x = window_x + (window_w - cover_w) / 2;
         } else if (card_index < 0) {
-            cover_rect.x = (window_w - cover_w) / 2 +
+            cover_rect.x = window_x + (window_w - cover_w) / 2 +
                            card_index * (cover_w + card_gap) -
                            selected_extra_w / 2;
         } else {
-            cover_rect.x = (window_w - cover_w) / 2 +
+            cover_rect.x = window_x + (window_w - cover_w) / 2 +
                            card_index * (cover_w + card_gap) +
                            selected_extra_w / 2;
         }
@@ -1646,18 +1748,18 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     }
 
     if (selected > 0) {
-        draw_text(renderer, title_font, 18, content_top + (content_bottom - content_top) / 2 - 20, ink, "<");
+        draw_text(renderer, title_font, window_x + 18, content_top + (content_bottom - content_top) / 2 - 20, ink, "<");
     }
     if (selected + 1 < count) {
-        draw_text(renderer, title_font, window_w - 42, content_top + (content_bottom - content_top) / 2 - 20,
+        draw_text(renderer, title_font, window_x + window_w - 42, content_top + (content_bottom - content_top) / 2 - 20,
                   ink, ">");
     }
 
     snprintf(position_buf, sizeof(position_buf), "%d / %d", selected + 1, count);
     TTF_SizeUTF8(body_font, position_buf, &position_width, NULL);
-    position_x = window_w - margin - position_width;
+    position_x = window_x + window_w - margin - position_width;
     footer_text_y = footer_line.y + (info_h - (body_font ? TTF_FontHeight(body_font) : 28)) / 2;
-    draw_text(renderer, body_font, margin, footer_text_y, muted, time_buf[0] ? time_buf : "--:--");
+    draw_text(renderer, body_font, window_x + margin, footer_text_y, muted, time_buf[0] ? time_buf : "--:--");
     draw_text(renderer, body_font, position_x, footer_text_y, muted, position_buf);
 }
 
@@ -2952,13 +3054,15 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
                           ReaderViewState *state, const UiLayout *layout) {
     static const int margin = 32;
     static const int header_h = 60;
-    static const int header_text_bottom_padding = 10;
-    SDL_Color ink = { 30, 29, 26, 255 };
-    SDL_Color muted = { 118, 108, 90, 255 };
-    SDL_Color line = { 223, 214, 194, 255 };
+    const UiTheme *theme = ui_current_theme();
+    SDL_Color ink = theme->ink;
+    SDL_Color muted = theme->muted;
+    SDL_Color line = theme->line;
     TTF_Font *content_font = state->content_font ? state->content_font : body_font;
     int canvas_w = layout ? layout->canvas_w : UI_CANVAS_WIDTH;
     int canvas_h = layout ? layout->canvas_h : UI_CANVAS_HEIGHT;
+    int cw = layout ? layout->content_w : canvas_w;
+    int cx = layout ? layout->content_x : 0;
     int start_line = state->current_page * state->lines_per_page;
     int end_line = start_line + state->lines_per_page;
     int line_h = state->line_height > 0 ? state->line_height : TTF_FontLineSkip(content_font);
@@ -2976,12 +3080,11 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
     char chapter_heading[256];
     int info_h = canvas_h - footer_line.y;
     int footer_text_y = footer_line.y + (info_h - (body_font ? TTF_FontHeight(body_font) : 28)) / 2;
-    int title_y = header_h - header_text_bottom_padding -
-                  (title_font ? TTF_FontHeight(title_font) : 36);
+    int title_y = (header_h - (title_font ? TTF_FontHeight(title_font) : 36)) / 2;
 
-    SDL_SetRenderDrawColor(renderer, 246, 242, 230, 255);
+    SDL_SetRenderDrawColor(renderer, theme->bg_r, theme->bg_g, theme->bg_b, 255);
     SDL_RenderClear(renderer);
-    SDL_SetRenderDrawColor(renderer, 248, 244, 234, 255);
+    SDL_SetRenderDrawColor(renderer, theme->header_r, theme->header_g, theme->header_b, 255);
     SDL_RenderFillRect(renderer, &header_band);
     SDL_SetRenderDrawColor(renderer, line.r, line.g, line.b, line.a);
     SDL_RenderFillRect(renderer, &header_line);
@@ -2992,9 +3095,9 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
     fit_text_ellipsis(title_font,
                       chapter_heading[0] ? chapter_heading :
                       (state->doc.book_title ? state->doc.book_title : ""),
-                      canvas_w - 2 * margin - 140,
+                      cw - 2 * margin - 140,
                       title_buf, sizeof(title_buf));
-    draw_text(renderer, title_font, margin, title_y, muted, title_buf);
+    draw_text(renderer, title_font, cx + margin, title_y, muted, title_buf);
 
     if (end_line > state->line_count) {
         end_line = state->line_count;
@@ -3003,33 +3106,36 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
         if (y + line_h > footer_text_y - 4) {
             break;
         }
-        draw_text(renderer, content_font, margin, y, ink, state->lines[i]);
+        draw_text(renderer, content_font, cx + margin, y, ink, state->lines[i]);
         y += line_h;
     }
 
     if (local_tm) {
         strftime(time_buf, sizeof(time_buf), "%H:%M", local_tm);
-        draw_text(renderer, body_font, margin, footer_text_y, muted, time_buf);
+        draw_text(renderer, body_font, cx + margin, footer_text_y, muted, time_buf);
     }
     snprintf(footer, sizeof(footer), "%d/%d", state->current_page + 1, total_pages);
     {
         int fw = 0, fh = 0;
         TTF_SizeUTF8(body_font, footer, &fw, &fh);
-        draw_text(renderer, body_font, canvas_w - margin - fw, footer_text_y, muted, footer);
+        draw_text(renderer, body_font, cx + cw - margin - fw, footer_text_y, muted, footer);
     }
 }
 
 static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
                                    ReaderViewState *state, const UiLayout *layout) {
-    const int header_text_bottom_padding = 10;
-    SDL_Color ink = { 28, 28, 24, 255 };
-    SDL_Color dim = { 118, 108, 92, 255 };
-    SDL_Color line = { 223, 214, 194, 255 };
+    const UiTheme *theme = ui_current_theme();
+    SDL_Color ink = theme->ink;
+    SDL_Color dim = theme->dim;
+    SDL_Color line = theme->line;
     int canvas_w = layout ? layout->canvas_w : UI_CANVAS_WIDTH;
     int canvas_h = layout ? layout->canvas_h : UI_CANVAS_HEIGHT;
+    int cw = layout ? layout->content_w : canvas_w;
+    int cx = layout ? layout->content_x : 0;
+    int panel_w = cw < 760 ? cw : 760;
     SDL_Rect backdrop = { 0, 0, canvas_w, canvas_h };
-    SDL_Rect panel = { canvas_w - 760, 0, 760, canvas_h };
-    SDL_Rect header = { canvas_w - 760, 0, 760, 84 };
+    SDL_Rect panel = { cx + cw - panel_w, 0, panel_w, canvas_h };
+    SDL_Rect header = { panel.x, 0, panel_w, 84 };
     int line_height = body_font ? TTF_FontLineSkip(body_font) + 10 : 38;
     int list_top;
     int visible;
@@ -3041,9 +3147,9 @@ static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font,
     if (!state || !state->doc.catalog_items || state->doc.catalog_count <= 0) {
         return;
     }
-    if (panel.x < 0) {
-        panel.x = 0;
-        panel.w = canvas_w;
+    if (panel.x < cx) {
+        panel.x = cx;
+        panel.w = cw;
         header.x = panel.x;
         header.w = panel.w;
     }
@@ -3066,18 +3172,20 @@ static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font,
     }
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer, 18, 16, 12, 108);
+    SDL_SetRenderDrawColor(renderer, theme->backdrop_r, theme->backdrop_g,
+                           theme->backdrop_b, theme->backdrop_a);
     SDL_RenderFillRect(renderer, &backdrop);
-    SDL_SetRenderDrawColor(renderer, 250, 246, 237, 255);
+    SDL_SetRenderDrawColor(renderer, theme->catalog_panel_r, theme->catalog_panel_g,
+                           theme->catalog_panel_b, 255);
     SDL_RenderFillRect(renderer, &panel);
-    SDL_SetRenderDrawColor(renderer, 244, 239, 228, 255);
+    SDL_SetRenderDrawColor(renderer, theme->catalog_header_r, theme->catalog_header_g,
+                           theme->catalog_header_b, 255);
     SDL_RenderFillRect(renderer, &header);
     draw_rect_outline(renderer, &panel, line, 1);
 
     fit_text_ellipsis(title_font, state->doc.book_title ? state->doc.book_title : "目录",
                       header.w - 120, title_buf, sizeof(title_buf));
-    header_title_y = header.y + header.h - header_text_bottom_padding -
-                     (title_font ? TTF_FontHeight(title_font) : 36);
+    header_title_y = header.y + (header.h - (title_font ? TTF_FontHeight(title_font) : 36)) / 2;
     draw_text(renderer, title_font, header.x + 24, header_title_y, ink, title_buf);
 
     for (int i = start; i < end; i++) {
@@ -3088,10 +3196,12 @@ static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font,
         SDL_Color color = item->is_lock ? dim : ink;
 
         if (i == state->catalog_selected) {
-            SDL_SetRenderDrawColor(renderer, 228, 216, 187, 255);
+            SDL_SetRenderDrawColor(renderer, theme->catalog_highlight_r, theme->catalog_highlight_g,
+                                   theme->catalog_highlight_b, 255);
             SDL_RenderFillRect(renderer, &row);
         } else if (reader_is_catalog_item_current(state, item)) {
-            SDL_SetRenderDrawColor(renderer, 242, 236, 223, 255);
+            SDL_SetRenderDrawColor(renderer, theme->catalog_current_r, theme->catalog_current_g,
+                                   theme->catalog_current_b, 255);
             SDL_RenderFillRect(renderer, &row);
         }
 
@@ -3333,6 +3443,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
         goto cleanup;
     }
 
+    ui_dark_mode = state_load_dark_mode(ctx);
+
     shelf_nuxt = state_read_json(ctx, "shelf.json");
     if (shelf_nuxt && shelf_books(shelf_nuxt) && cJSON_IsArray(shelf_books(shelf_nuxt))) {
         shelf_status[0] = '\0';
@@ -3383,6 +3495,10 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                     } else {
                         running = 0;
                     }
+                } else if (ui_event_is_dark_mode_toggle(&event, tg5040_input,
+                                                        tg5040_select_pressed)) {
+                    ui_dark_mode = !ui_dark_mode;
+                    state_save_dark_mode(ctx, ui_dark_mode);
                 } else if (ui_event_is_rotate_combo(&event, tg5040_input,
                                                     tg5040_select_pressed,
                                                     tg5040_start_pressed)) {

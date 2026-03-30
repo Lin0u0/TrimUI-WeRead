@@ -20,5 +20,7 @@ int state_load_reader_position_by_book_id(ApiContext *ctx, const char *book_id,
                                           char *target, size_t target_size,
                                           int *font_size, int *content_font_size,
                                           int *current_page);
+int state_save_dark_mode(ApiContext *ctx, int dark_mode);
+int state_load_dark_mode(ApiContext *ctx);
 
 #endif
