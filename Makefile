@@ -28,7 +28,6 @@ TG5040_CURL_PREFIX ?= $(TG5040_DEPS_PREFIX)/curl
 TG5040_SDK_ROOT ?= $(abspath build/tg5040-sdk)
 TG5040_SDK_USR ?= $(TG5040_SDK_ROOT)/sdk_usr/usr
 TG5040_GCC_PATH ?=
-TG5040_SYSROOT ?=
 
 COMMON_CFLAGS := -Wall -Wextra -Wno-unused-parameter -Ivendor
 COMMON_LDFLAGS := -lm
@@ -83,27 +82,31 @@ ifeq ($(PLATFORM),native)
 else ifeq ($(PLATFORM),tg5040)
   CROSS ?= aarch64-linux-gnu-
   CC := $(if $(strip $(TG5040_GCC_PATH)),$(TG5040_GCC_PATH),$(CROSS)gcc)
-  TG5040_SYSROOT := $(if $(strip $(TG5040_SYSROOT)),$(TG5040_SYSROOT),$(shell $(CC) -print-sysroot 2>/dev/null))
+  TG5040_RESOLVED_SYSROOT := $(strip $(shell $(CC) -print-sysroot 2>/dev/null))
   SDL_CFLAGS ?= -I$(TG5040_SDK_USR)/include/SDL2 -D_REENTRANT
-  TG5040_RPATH_LINKS := \
-    -Wl,-rpath-link,$(TG5040_SDK_USR)/lib \
-    -Wl,-rpath-link,$(TG5040_SYSROOT)/lib \
-    -Wl,-rpath-link,$(TG5040_SYSROOT)/usr/lib \
-    -Wl,-rpath-link,$(TG5040_SYSROOT)/lib64 \
-    -Wl,-rpath-link,$(TG5040_SYSROOT)/usr/lib64
+  TG5040_RPATH_LINKS := -Wl,-rpath-link,$(TG5040_SDK_USR)/lib
+  ifneq ($(TG5040_RESOLVED_SYSROOT),)
+    TG5040_RPATH_LINKS += \
+      -Wl,-rpath-link,$(TG5040_RESOLVED_SYSROOT)/lib \
+      -Wl,-rpath-link,$(TG5040_RESOLVED_SYSROOT)/usr/lib \
+      -Wl,-rpath-link,$(TG5040_RESOLVED_SYSROOT)/lib64 \
+      -Wl,-rpath-link,$(TG5040_RESOLVED_SYSROOT)/usr/lib64
+  endif
   SDL_LIBS ?= $(TG5040_RPATH_LINKS) \
     $(TG5040_SDK_USR)/lib/libSDL2.so \
     $(TG5040_SDK_USR)/lib/libSDL2_ttf.so \
     $(TG5040_SDK_USR)/lib/libSDL2_image.so \
     $(TG5040_SDK_USR)/lib/libfreetype.so \
     $(TG5040_SDK_USR)/lib/libbz2.so \
-    -lz -ldl -lpthread
+    $(TG5040_SDK_USR)/lib/libz.so \
+    -ldl -lpthread
   CURL_CFLAGS ?= -I$(TG5040_CURL_PREFIX)/include
   CURL_LIBS ?= \
     $(TG5040_CURL_PREFIX)/lib/libcurl.a \
     $(TG5040_SDK_USR)/lib/libssl.so.1.1 \
     $(TG5040_SDK_USR)/lib/libcrypto.so.1.1 \
-    -lz -ldl -lpthread
+    $(TG5040_SDK_USR)/lib/libz.so \
+    -ldl -lpthread
   PACKAGE_NAME := $(APP_NAME)-trimui.tar.gz
 else
   $(error Unsupported PLATFORM '$(PLATFORM)')
