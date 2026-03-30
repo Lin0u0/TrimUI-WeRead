@@ -1,6 +1,6 @@
 {
   "name": "WeRead",
-  "version": "@VERSION@",
+  "version": "v@VERSION@",
   "type": "TOOL",
   "description": "A native WeRead client for TrimUI handhelds.",
   "author": "Lin0u0",
