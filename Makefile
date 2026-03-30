@@ -278,7 +278,7 @@ stock-release:
 crossmix-release:
 	$(MAKE) PLATFORM=tg5040 package-crossmix
 
-package-all: macos-release nextui-release stock-release crossmix-release
+package-all: nextui-release stock-release crossmix-release
 
 print-config:
 	@echo "PLATFORM=$(PLATFORM)"

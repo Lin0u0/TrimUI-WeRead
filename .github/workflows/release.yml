@@ -54,33 +54,10 @@ jobs:
             dist/WeRead-crossmix.tar.gz
           if-no-files-found: error
 
-  build-macos:
-    name: Build macOS Package
-    runs-on: macos-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Install build dependencies
-        run: |
-          brew update
-          brew install sdl2 sdl2_ttf sdl2_image curl
-
-      - name: Build macOS package
-        run: make macos-release
-
-      - name: Upload macOS artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: macos-release
-          path: dist/WeRead-macos.tar.gz
-          if-no-files-found: error
-
   release:
     name: Publish GitHub Release
     needs:
       - build-trimui
-      - build-macos
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
@@ -99,4 +76,3 @@ jobs:
             dist/WeRead.pakz
             dist/WeRead-stock-app.tar.gz
             dist/WeRead-crossmix.tar.gz
-            dist/WeRead-macos.tar.gz
