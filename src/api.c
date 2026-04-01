@@ -106,12 +106,13 @@ static void setup_curl(ApiContext *ctx, const char *url, const char *user_agent,
     curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, "");
 }
 
-static int api_get_internal(ApiContext *ctx, const char *url, Buffer *buf, long timeout_seconds) {
+static int api_get_ua_internal(ApiContext *ctx, const char *url, const char *user_agent,
+                               Buffer *buf, long timeout_seconds) {
     long retry_timeout = timeout_seconds < 10 ? timeout_seconds : 10;
 
     for (int attempt = 0; attempt <= 1; attempt++) {
         buf_init(buf);
-        setup_curl(ctx, url, KINDLE_USER_AGENT, buf, attempt == 0 ? timeout_seconds : retry_timeout);
+        setup_curl(ctx, url, user_agent, buf, attempt == 0 ? timeout_seconds : retry_timeout);
         ctx->last_curl_code = curl_easy_perform(ctx->curl);
         CURLcode res = ctx->last_curl_code;
 
@@ -144,41 +145,11 @@ static int api_get_internal(ApiContext *ctx, const char *url, Buffer *buf, long 
 }
 
 int api_get(ApiContext *ctx, const char *url, Buffer *buf) {
-    return api_get_internal(ctx, url, buf, 30L);
+    return api_get_ua_internal(ctx, url, KINDLE_USER_AGENT, buf, 30L);
 }
 
 int api_get_with_ua(ApiContext *ctx, const char *url, const char *user_agent, Buffer *buf) {
-    for (int attempt = 0; attempt <= 1; attempt++) {
-        buf_init(buf);
-        setup_curl(ctx, url, user_agent, buf, attempt == 0 ? 30L : 10L);
-        ctx->last_curl_code = curl_easy_perform(ctx->curl);
-
-        if (ctx->last_curl_code == CURLE_OK) {
-            long code;
-            curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &code);
-            if (code >= 200 && code < 400) {
-                if (attempt > 0) ctx->poor_network = 1;
-                return 0;
-            }
-            fprintf(stderr, "GET %s returned %ld\n", url, code);
-            api_buffer_free(buf);
-            return -1;
-        }
-
-        if (attempt == 0 && is_transient_error(ctx->last_curl_code)) {
-            ctx->poor_network = 1;
-            api_buffer_free(buf);
-            sleep(1);
-            continue;
-        }
-
-        if (ctx->last_curl_code != CURLE_OPERATION_TIMEDOUT) {
-            fprintf(stderr, "GET %s failed: %s\n", url, ctx->error_buf);
-        }
-        api_buffer_free(buf);
-        return -1;
-    }
-    return -1;
+    return api_get_ua_internal(ctx, url, user_agent, buf, 30L);
 }
 
 static int api_post_internal(ApiContext *ctx, const char *url, const char *body, Buffer *buf,

@@ -7,6 +7,7 @@
 #include <SDL_ttf.h>
 #include <ctype.h>
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include "stb_image.h"
 #include <stdlib.h>
@@ -193,6 +194,7 @@ typedef struct {
 static int reader_total_pages(ReaderViewState *state);
 static int reader_find_page_for_offset(const ReaderViewState *state, int target_offset);
 static int reader_reset_content_font(TTF_Font *fallback_font, ReaderViewState *state);
+static void char_width_cache_reset(void);
 static int reader_has_cloud_position(const ReaderDocument *doc);
 static const char *reader_find_progress_target(const ReaderViewState *state);
 static int reader_view_adopt_document(TTF_Font *font, ReaderDocument *doc,
@@ -324,6 +326,12 @@ static int reader_reset_content_font(TTF_Font *fallback_font, ReaderViewState *s
             return fallback_font ? 0 : -1;
         }
     }
+
+    /* Clear character width cache to force recalculation with new font size.
+     * TTF_OpenFont may reuse the same memory address as the closed font,
+     * causing get_char_width_fast to incorrectly use cached widths from
+     * the previous font size. */
+    char_width_cache_reset();
 
     return 0;
 }
@@ -792,7 +800,7 @@ static void ui_apply_repeat_action(UiRepeatAction action, ApiContext *ctx, TTF_F
                 shelf_status[0] = '\0';
             } else {
                 snprintf(shelf_status, shelf_status_size,
-                         "Failed to open the next chapter.");
+                         "\xE6\x97\xA0\xE6\xB3\x95\xE6\x89\x93\xE5\xBC\x80\xE4\xB8\x8B\xE4\xB8\x80\xE7\xAB\xA0");  /* 无法打开下一章 */
             }
             free(target);
         }
@@ -836,7 +844,7 @@ static void ui_apply_repeat_action(UiRepeatAction action, ApiContext *ctx, TTF_F
                 shelf_status[0] = '\0';
             } else {
                 snprintf(shelf_status, shelf_status_size,
-                         "Failed to open the previous chapter.");
+                         "\xE6\x97\xA0\xE6\xB3\x95\xE6\x89\x93\xE5\xBC\x80\xE4\xB8\x8A\xE4\xB8\x80\xE7\xAB\xA0");  /* 无法打开上一章 */
             }
             free(target);
         }
@@ -1516,7 +1524,7 @@ static void render_login(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     SDL_RenderFillRect(renderer, &card);
     draw_rect_outline(renderer, &card, line, 1);
 
-    draw_text(renderer, title_font, cx + margin, title_y, ink, "WeRead");
+    draw_text(renderer, title_font, cx + margin, title_y, ink, "\xE5\xBE\xAE\xE4\xBF\xA1\xE8\xAF\xBB\xE4\xB9\xA6");  /* 微信读书 */
 
     SDL_SetRenderDrawColor(renderer, theme->qr_slot_r, theme->qr_slot_g, theme->qr_slot_b, 255);
     SDL_RenderFillRect(renderer, &qr_slot);
@@ -1527,7 +1535,8 @@ static void render_login(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     }
 
     if (body_font) {
-        const char *status_text = (status && status[0]) ? status : "Scan QR code to sign in";
+        /* 扫码登录 */
+        const char *status_text = (status && status[0]) ? status : "\xE6\x89\xAB\xE7\xA0\x81\xE7\x99\xBB\xE5\xBD\x95";
         char status_buf[256];
         fit_text_ellipsis(body_font, status_text, cw - margin * 2, status_buf, sizeof(status_buf));
         TTF_SizeUTF8(body_font, status_buf, &status_width, NULL);
@@ -1540,10 +1549,12 @@ static void render_login(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
 static void render_poor_network_toast(SDL_Renderer *renderer, TTF_Font *body_font,
                                       Uint32 toast_until, const UiLayout *layout) {
     Uint32 now = SDL_GetTicks();
-    const char *msg = "Poor network";
+    /* Localized message: "网络不佳" (Poor network in Chinese) */
+    const char *msg = "\xE7\xBD\x91\xE7\xBB\x9C\xE4\xB8\x8D\xE4\xBD\xB3";
     int tw = 0, th = 0;
-    int pad_x = 16, pad_y = 8;
+    int pad_x = 20, pad_y = 10;
     int canvas_w = layout ? layout->canvas_w : UI_CANVAS_WIDTH;
+    int canvas_h = layout ? layout->canvas_h : UI_CANVAS_HEIGHT;
     SDL_Rect bg;
     Uint8 alpha;
     Uint32 remaining;
@@ -1559,7 +1570,7 @@ static void render_poor_network_toast(SDL_Renderer *renderer, TTF_Font *body_fon
     bg.w = tw + pad_x * 2;
     bg.h = th + pad_y * 2;
     bg.x = (canvas_w - bg.w) / 2;
-    bg.y = 16;
+    bg.y = canvas_h - bg.h - 24;  /* Position at bottom with 24px margin */
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, alpha);
@@ -1659,7 +1670,7 @@ static void render_shelf_cover(SDL_Renderer *renderer, TTF_Font *body_font, SDL_
         SDL_SetRenderDrawColor(renderer, theme->cover_empty_r, theme->cover_empty_g, theme->cover_empty_b, 255);
         SDL_RenderFillRect(renderer, &scaled_rect);
         draw_text(renderer, body_font, scaled_rect.x + 22, scaled_rect.y + scaled_rect.h / 2 - 10,
-                  ink, "No Cover");
+                  ink, "\xE6\x97\xA0\xE5\xB0\x81\xE9\x9D\xA2");  /* 无封面 */
     }
 }
 
@@ -1733,15 +1744,18 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
 
     if (count == 0) {
         int empty_w = 0;
-        TTF_SizeUTF8(title_font, "Shelf Empty", &empty_w, NULL);
-        draw_text(renderer, title_font, window_x + window_w / 2 - empty_w / 2, window_h / 2 - 40, ink, "Shelf Empty");
+        /* 书架为空 */
+        const char *empty_text = "\xE4\xB9\xA6\xE6\x9E\xB6\xE4\xB8\xBA\xE7\xA9\xBA";
+        TTF_SizeUTF8(title_font, empty_text, &empty_w, NULL);
+        draw_text(renderer, title_font, window_x + window_w / 2 - empty_w / 2, window_h / 2 - 40, ink, empty_text);
         return;
     }
 
     shelf_cover_cache_trim(cover_cache, selected, UI_SHELF_COVER_TEXTURE_KEEP_RADIUS);
     selected_book = cJSON_GetArrayItem(books, selected);
     selected_title = json_get_string(selected_book, "title");
-    fit_text_ellipsis(title_font, selected_title ? selected_title : "WeRead",
+    /* 微信读书 */
+    fit_text_ellipsis(title_font, selected_title ? selected_title : "\xE5\xBE\xAE\xE4\xBF\xA1\xE8\xAF\xBB\xE4\xB9\xA6",
                       window_w - margin * 2 - 140,
                       title_buf, sizeof(title_buf));
     draw_text(renderer, title_font, window_x + margin, title_y, ink, title_buf);
@@ -1822,6 +1836,106 @@ static int utf8_char_len(unsigned char c) {
     if ((c & 0xF0) == 0xE0) return 3;
     if ((c & 0xF8) == 0xF0) return 4;
     return 1;
+}
+
+static uint32_t utf8_decode(const char *s, int *out_len) {
+    unsigned char c = (unsigned char)s[0];
+    int len = utf8_char_len(c);
+    if (out_len) *out_len = len;
+    if (len == 1) return c;
+    if (len == 2) return ((c & 0x1F) << 6) | (s[1] & 0x3F);
+    if (len == 3) return ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+    if (len == 4) return ((c & 0x07) << 18) | ((s[1] & 0x3F) << 12) | ((s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+    return c;
+}
+
+static int is_cjk_codepoint(uint32_t cp) {
+    return (cp >= 0x4E00 && cp <= 0x9FFF) ||   /* CJK Unified Ideographs */
+           (cp >= 0x3400 && cp <= 0x4DBF) ||   /* CJK Extension A */
+           (cp >= 0x20000 && cp <= 0x2A6DF) || /* CJK Extension B */
+           (cp >= 0x2A700 && cp <= 0x2B73F) || /* CJK Extension C */
+           (cp >= 0x2B740 && cp <= 0x2B81F) || /* CJK Extension D */
+           (cp >= 0xF900 && cp <= 0xFAFF) ||   /* CJK Compatibility Ideographs */
+           (cp >= 0x3100 && cp <= 0x312F) ||   /* Bopomofo */
+           (cp >= 0x31A0 && cp <= 0x31BF) ||   /* Bopomofo Extended */
+           (cp >= 0x3000 && cp <= 0x303F) ||   /* CJK Symbols and Punctuation */
+           (cp >= 0xFF00 && cp <= 0xFFEF);     /* Halfwidth and Fullwidth Forms */
+}
+
+static int is_cjk_char(const char *s) {
+    uint32_t cp = utf8_decode(s, NULL);
+    return is_cjk_codepoint(cp);
+}
+
+static int is_latin_or_digit(const char *s) {
+    unsigned char c = (unsigned char)*s;
+    if ((c & 0x80) != 0) return 0;
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+}
+
+/* Character width cache for faster text measurement */
+typedef struct {
+    uint32_t codepoint;
+    int width;
+} CharWidthEntry;
+
+#define CHAR_WIDTH_CACHE_SIZE 512
+static CharWidthEntry g_char_width_cache[CHAR_WIDTH_CACHE_SIZE];
+static int g_char_width_cache_count = 0;
+static TTF_Font *g_char_width_cache_font = NULL;
+
+static void char_width_cache_reset(void) {
+    g_char_width_cache_count = 0;
+    g_char_width_cache_font = NULL;
+}
+
+static int char_width_cache_lookup(uint32_t cp, int *width) {
+    for (int i = 0; i < g_char_width_cache_count; i++) {
+        if (g_char_width_cache[i].codepoint == cp) {
+            *width = g_char_width_cache[i].width;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void char_width_cache_insert(uint32_t cp, int width) {
+    if (g_char_width_cache_count >= CHAR_WIDTH_CACHE_SIZE) {
+        /* Evict oldest entries by shifting */
+        memmove(&g_char_width_cache[0], &g_char_width_cache[CHAR_WIDTH_CACHE_SIZE / 4],
+                sizeof(CharWidthEntry) * (CHAR_WIDTH_CACHE_SIZE * 3 / 4));
+        g_char_width_cache_count = CHAR_WIDTH_CACHE_SIZE * 3 / 4;
+    }
+    g_char_width_cache[g_char_width_cache_count].codepoint = cp;
+    g_char_width_cache[g_char_width_cache_count].width = width;
+    g_char_width_cache_count++;
+}
+
+static int get_char_width_fast(TTF_Font *font, const char *s, int char_len) {
+    uint32_t cp;
+    int width = 0;
+    char buf[8];
+
+    if (!font || !s || char_len <= 0 || char_len > 4) {
+        return 0;
+    }
+
+    /* Reset cache if font changed */
+    if (font != g_char_width_cache_font) {
+        char_width_cache_reset();
+        g_char_width_cache_font = font;
+    }
+
+    cp = utf8_decode(s, NULL);
+    if (char_width_cache_lookup(cp, &width)) {
+        return width;
+    }
+
+    memcpy(buf, s, (size_t)char_len);
+    buf[char_len] = '\0';
+    TTF_SizeUTF8(font, buf, &width, NULL);
+    char_width_cache_insert(cp, width);
+    return width;
 }
 
 static int is_forbidden_line_start_punct(const char *text) {
@@ -2217,8 +2331,11 @@ static int wrap_paragraph(TTF_Font *font, const char *text, int max_width, Reade
     const char *p = text;
     const char *line_start = text;
     const char *last_break = NULL;
+    const char *last_word_start = NULL;
     int char_offset = 0;
     int line_start_offset = 0;
+    int line_width = 0;
+    int in_latin_word = 0;
 
     if (!font || !text || !state) {
         return -1;
@@ -2226,8 +2343,9 @@ static int wrap_paragraph(TTF_Font *font, const char *text, int max_width, Reade
 
     while (*p) {
         int ch_len = utf8_char_len((unsigned char)*p);
-        int next_width = 0;
+        int ch_width = 0;
 
+        /* Handle explicit newlines */
         if (*p == '\n') {
             if (append_line(state, line_start, (size_t)(p - line_start), line_start_offset) != 0) {
                 return -1;
@@ -2240,36 +2358,75 @@ static int wrap_paragraph(TTF_Font *font, const char *text, int max_width, Reade
             line_start = p;
             line_start_offset = char_offset;
             last_break = NULL;
+            last_word_start = NULL;
+            line_width = 0;
+            in_latin_word = 0;
             continue;
         }
 
+        /* Track break opportunities */
         if (isspace((unsigned char)*p)) {
+            /* Space is always a valid break point */
             last_break = p;
-        }
-
-        {
-            size_t len = (size_t)((p + ch_len) - line_start);
-            char *candidate = malloc(len + 1);
-            if (!candidate) {
-                return -1;
+            in_latin_word = 0;
+            last_word_start = NULL;
+        } else if (is_cjk_char(p)) {
+            /* CJK characters can break before or after */
+            if (p > line_start) {
+                last_break = p;
             }
-            memcpy(candidate, line_start, len);
-            candidate[len] = '\0';
-            TTF_SizeUTF8(font, candidate, &next_width, NULL);
-            free(candidate);
+            in_latin_word = 0;
+            last_word_start = NULL;
+        } else if (is_latin_or_digit(p)) {
+            /* Start of a Latin/digit word - track the word start */
+            if (!in_latin_word) {
+                in_latin_word = 1;
+                last_word_start = p;
+            }
+        } else {
+            /* Other characters (punctuation) - may break after */
+            in_latin_word = 0;
+            last_word_start = NULL;
         }
 
-        if (next_width > max_width && p > line_start) {
-            const char *break_at = last_break && last_break > line_start ? last_break : p;
+        /* Get character width using fast cached lookup */
+        ch_width = get_char_width_fast(font, p, ch_len);
+
+        /* Check if adding this character would exceed max width */
+        if (line_width + ch_width > max_width && p > line_start) {
+            const char *break_at;
             const char *next_start;
 
+            /* Determine break point */
+            if (last_break && last_break > line_start) {
+                /* Break at last space or CJK boundary */
+                break_at = last_break;
+                if (isspace((unsigned char)*last_break)) {
+                    next_start = last_break + 1;
+                } else {
+                    next_start = last_break;
+                }
+            } else if (last_word_start && last_word_start > line_start) {
+                /* Break before current Latin word */
+                break_at = last_word_start;
+                next_start = last_word_start;
+            } else {
+                /* Force break at current position */
+                break_at = p;
+                next_start = p;
+            }
+
+            /* Trim trailing spaces from line */
             while (break_at > line_start && isspace((unsigned char)break_at[-1])) {
                 break_at--;
             }
-            next_start = last_break && last_break > line_start ? last_break + 1 : p;
+
+            /* Skip leading spaces for next line */
             while (*next_start && isspace((unsigned char)*next_start) && *next_start != '\n') {
                 next_start++;
             }
+
+            /* Handle forbidden line-start punctuation */
             {
                 const char *punct = skip_line_start_spacing(next_start, next_start + strlen(next_start));
                 while (*punct && *punct != '\n' && is_forbidden_line_start_punct(punct)) {
@@ -2280,9 +2437,12 @@ static int wrap_paragraph(TTF_Font *font, const char *text, int max_width, Reade
                     next_start = punct;
                 }
             }
+
             if (append_line(state, line_start, (size_t)(break_at - line_start), line_start_offset) != 0) {
                 return -1;
             }
+
+            /* Update position tracking */
             p = next_start;
             while (*p && isspace((unsigned char)*p) && *p != '\n') {
                 p++;
@@ -2291,13 +2451,18 @@ static int wrap_paragraph(TTF_Font *font, const char *text, int max_width, Reade
             line_start = p;
             line_start_offset = char_offset;
             last_break = NULL;
+            last_word_start = NULL;
+            line_width = 0;
+            in_latin_word = 0;
             continue;
         }
 
+        line_width += ch_width;
         p += ch_len;
         char_offset++;
     }
 
+    /* Append remaining text */
     if (p > line_start) {
         if (append_line(state, line_start, (size_t)(p - line_start), line_start_offset) != 0) {
             return -1;
@@ -2843,7 +3008,8 @@ static int reader_expand_catalog_for_selection(ApiContext *ctx, ReaderViewState 
     }
     if (reader_expand_catalog(ctx, &state->doc, direction, &added_count) != 0) {
         if (status && status_size > 0) {
-            snprintf(status, status_size, "Failed to load more catalog chapters.");
+            /* 无法加载更多章节 */
+            snprintf(status, status_size, "\xE6\x97\xA0\xE6\xB3\x95\xE5\x8A\xA0\xE8\xBD\xBD\xE6\x9B\xB4\xE5\xA4\x9A\xE7\xAB\xA0\xE8\x8A\x82");
         }
         return 0;
     }
@@ -3091,6 +3257,7 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
                           ReaderViewState *state, const UiLayout *layout) {
     static const int margin = 32;
     static const int header_h = 60;
+    static const int footer_h = 56;
     const UiTheme *theme = ui_current_theme();
     SDL_Color ink = theme->ink;
     SDL_Color muted = theme->muted;
@@ -3103,7 +3270,6 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
     int start_line = state->current_page * state->lines_per_page;
     int end_line = start_line + state->lines_per_page;
     int line_h = state->line_height > 0 ? state->line_height : TTF_FontLineSkip(content_font);
-    int y = 76;
     int total_pages = state->line_count > 0 ?
         (state->line_count + state->lines_per_page - 1) / state->lines_per_page : 1;
     time_t now = time(NULL);
@@ -3113,11 +3279,17 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
     char title_buf[256];
     SDL_Rect header_band = { 0, 0, canvas_w, header_h };
     SDL_Rect header_line = { 0, header_h, canvas_w, 1 };
-    SDL_Rect footer_line = { 0, canvas_h - 56, canvas_w, 1 };
+    SDL_Rect footer_line = { 0, canvas_h - footer_h, canvas_w, 1 };
     char chapter_heading[256];
     int info_h = canvas_h - footer_line.y;
     int footer_text_y = footer_line.y + (info_h - (body_font ? TTF_FontHeight(body_font) : 28)) / 2;
     int title_y = (header_h - (title_font ? TTF_FontHeight(title_font) : 36)) / 2;
+
+    /* Content area: top-aligned with fixed top margin */
+    int content_top = header_h + 16;
+    int content_bottom = canvas_h - footer_h - 4;
+    int content_x = cx + margin;
+    int y = content_top;
 
     SDL_SetRenderDrawColor(renderer, theme->bg_r, theme->bg_g, theme->bg_b, 255);
     SDL_RenderClear(renderer);
@@ -3139,12 +3311,42 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
     if (end_line > state->line_count) {
         end_line = state->line_count;
     }
-    for (int i = start_line; i < end_line; i++) {
-        if (y + line_h > footer_text_y - 4) {
-            break;
+    {
+        /* Find max line width and count visible lines;
+         * center vertically only when the page is full */
+        int max_line_w = 0;
+        int content_area_w = cw - 2 * margin;
+        int content_area_h = content_bottom - content_top;
+        int block_offset_x, block_offset_y;
+        int visible_lines = 0;
+        int total_text_h;
+
+        for (int i = start_line; i < end_line; i++) {
+            int line_w = 0, line_h_unused = 0;
+            if (content_top + visible_lines * line_h + line_h > content_bottom) {
+                break;
+            }
+            TTF_SizeUTF8(content_font, state->lines[i], &line_w, &line_h_unused);
+            if (line_w > max_line_w) {
+                max_line_w = line_w;
+            }
+            visible_lines++;
         }
-        draw_text(renderer, content_font, cx + margin, y, ink, state->lines[i]);
-        y += line_h;
+
+        block_offset_x = (content_area_w - max_line_w) / 2;
+        if (block_offset_x < 0) block_offset_x = 0;
+
+        /* Use full-page text height for offset so every page shares
+         * the same top margin; partial pages simply don't center. */
+        total_text_h = state->lines_per_page * line_h;
+        block_offset_y = (content_area_h - total_text_h) / 2;
+        if (block_offset_y < 0) block_offset_y = 0;
+
+        y = content_top + block_offset_y;
+        for (int i = start_line; i < start_line + visible_lines; i++) {
+            draw_text(renderer, content_font, content_x + block_offset_x, y, ink, state->lines[i]);
+            y += line_h;
+        }
     }
 
     if (local_tm) {
@@ -3311,13 +3513,15 @@ static void begin_login_flow(ApiContext *ctx, LoginStartState *login_start,
     snprintf(login_start->ca_file, sizeof(login_start->ca_file), "%s", ctx->ca_file);
     snprintf(login_start->qr_path, sizeof(login_start->qr_path), "%s", qr_path);
     login_start->running = 1;
-    snprintf(status, status_size, "Generating QR code...");
+    /* 正在生成二维码... */
+    snprintf(status, status_size, "\xE6\xAD\xA3\xE5\x9C\xA8\xE7\x94\x9F\xE6\x88\x90\xE4\xBA\x8C\xE7\xBB\xB4\xE7\xA0\x81...");
     *view = VIEW_LOGIN;
     *login_thread = SDL_CreateThread(login_start_thread, "weread-login-start", login_start);
     if (!*login_thread) {
         login_start->running = 0;
         login_start->failed = 1;
-        snprintf(status, status_size, "Failed to create login worker thread.");
+        /* 无法创建登录线程 */
+        snprintf(status, status_size, "\xE6\x97\xA0\xE6\xB3\x95\xE5\x88\x9B\xE5\xBB\xBA\xE7\x99\xBB\xE5\xBD\x95\xE7\xBA\xBF\xE7\xA8\x8B");
     }
 }
 
@@ -3401,7 +3605,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     int login_active = 0;
     char status[256] = "";
     char shelf_status[256] = "";
-    char loading_title[128] = "WeRead";
+    /* 微信读书 */
+    char loading_title[128] = "\xE5\xBE\xAE\xE4\xBF\xA1\xE8\xAF\xBB\xE4\xB9\xA6";
     char qr_path[1024];
     int tg5040_input = ui_is_tg5040_platform(platform);
     int tg5040_select_pressed = 0;
@@ -3493,7 +3698,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
         cJSON_Delete(shelf_nuxt);
         shelf_nuxt = NULL;
         view = VIEW_BOOTSTRAP;
-        snprintf(status, sizeof(status), "Checking your library...");
+        /* 正在检查书架... */
+        snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE6\xA3\x80\xE6\x9F\xA5\xE4\xB9\xA6\xE6\x9E\xB6...");
     }
     begin_startup_refresh(ctx, &startup_state, &startup_thread_handle);
 
@@ -3529,7 +3735,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                             view = VIEW_SHELF;
                         }
                     } else if (view == VIEW_OPENING && reader_open.running) {
-                        snprintf(status, sizeof(status), "Still opening the book...");
+                        /* 正在打开书籍... */
+                        snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE6\x89\x93\xE5\xBC\x80\xE4\xB9\xA6\xE7\xB1\x8D...");
                     } else {
                         running = 0;
                     }
@@ -3564,8 +3771,10 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         char target[2048];
                         int font_size = 3;
                         if (state_load_last_reader(ctx, target, sizeof(target), &font_size, NULL) == 0) {
-                            snprintf(loading_title, sizeof(loading_title), "Opening Book");
-                            snprintf(status, sizeof(status), "Restoring your last page...");
+                            /* 正在打开 */
+                            snprintf(loading_title, sizeof(loading_title), "\xE6\xAD\xA3\xE5\x9C\xA8\xE6\x89\x93\xE5\xBC\x80");
+                            /* 正在恢复阅读位置... */
+                            snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE6\x81\xA2\xE5\xA4\x8D\xE9\x98\x85\xE8\xAF\xBB\xE4\xBD\x8D\xE7\xBD\xAE...");
                             begin_reader_open(ctx, &reader_open, &reader_open_thread_handle,
                                               target, NULL, font_size);
                             if (reader_open.running || reader_open_thread_handle) {
@@ -3580,19 +3789,23 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         const char *target = shelf_reader_target(urls, selected);
                         const char *book_id = json_get_string(book, "bookId");
                         if (target) {
-                            snprintf(loading_title, sizeof(loading_title), "Opening Book");
-                            snprintf(status, sizeof(status), "Loading chapter and reading progress...");
+                            /* 正在打开 */
+                            snprintf(loading_title, sizeof(loading_title), "\xE6\xAD\xA3\xE5\x9C\xA8\xE6\x89\x93\xE5\xBC\x80");
+                            /* 正在加载章节... */
+                            snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE5\x8A\xA0\xE8\xBD\xBD\xE7\xAB\xA0\xE8\x8A\x82...");
                             begin_reader_open(ctx, &reader_open, &reader_open_thread_handle,
                                               target, book_id, 3);
                             if (reader_open.running || reader_open_thread_handle) {
                                 view = VIEW_OPENING;
                             } else {
+                                /* 无法启动加载任务 */
                                 snprintf(shelf_status, sizeof(shelf_status),
-                                         "Failed to start the open-book worker.");
+                                         "\xE6\x97\xA0\xE6\xB3\x95\xE5\x90\xAF\xE5\x8A\xA8\xE5\x8A\xA0\xE8\xBD\xBD\xE4\xBB\xBB\xE5\x8A\xA1");
                             }
                         } else {
+                            /* 无法打开所选书籍 */
                             snprintf(shelf_status, sizeof(shelf_status),
-                                     "Failed to open the selected book.");
+                                     "\xE6\x97\xA0\xE6\xB3\x95\xE6\x89\x93\xE5\xBC\x80\xE6\x89\x80\xE9\x80\x89\xE4\xB9\xA6\xE7\xB1\x8D");
                         }
                     }
                 } else if (view == VIEW_LOGIN) {
@@ -3606,15 +3819,18 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                 } else if (view == VIEW_BOOTSTRAP) {
                     if (ui_event_is_confirm(&event, tg5040_input) &&
                         !startup_state.running && !startup_thread_handle) {
-                        snprintf(loading_title, sizeof(loading_title), "WeRead");
-                        snprintf(status, sizeof(status), "Retrying...");
+                        /* 微信读书 */
+                        snprintf(loading_title, sizeof(loading_title), "\xE5\xBE\xAE\xE4\xBF\xA1\xE8\xAF\xBB\xE4\xB9\xA6");
+                        /* 正在重试... */
+                        snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE9\x87\x8D\xE8\xAF\x95...");
                         begin_startup_refresh(ctx, &startup_state, &startup_thread_handle);
                     }
                 } else if (view == VIEW_OPENING) {
                     if (ui_event_is_confirm(&event, tg5040_input) &&
                         !reader_open.running && !reader_open_thread_handle &&
                         reader_open.source_target[0]) {
-                        snprintf(status, sizeof(status), "Retrying...");
+                        /* 正在重试... */
+                        snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE9\x87\x8D\xE8\xAF\x95...");
                         begin_reader_open(ctx, &reader_open, &reader_open_thread_handle,
                                           reader_open.source_target,
                                           reader_open.book_id[0] ? reader_open.book_id : NULL,
@@ -3690,8 +3906,9 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                     reader_state.catalog_open = 0;
                                     shelf_status[0] = '\0';
                                 } else {
+                                    /* 无法打开所选章节 */
                                     snprintf(shelf_status, sizeof(shelf_status),
-                                             "Failed to open the selected chapter.");
+                                             "\xE6\x97\xA0\xE6\xB3\x95\xE6\x89\x93\xE5\xBC\x80\xE6\x89\x80\xE9\x80\x89\xE7\xAB\xA0\xE8\x8A\x82");
                                 }
                             }
                         }
@@ -3723,8 +3940,9 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                 reader_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
                             } else {
+                                /* 无法打开下一章 */
                                 snprintf(shelf_status, sizeof(shelf_status),
-                                         "Failed to open the next chapter.");
+                                         "\xE6\x97\xA0\xE6\xB3\x95\xE6\x89\x93\xE5\xBC\x80\xE4\xB8\x8B\xE4\xB8\x80\xE7\xAB\xA0");
                             }
                             free(target);
                         }
@@ -3756,8 +3974,9 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                 reader_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
                             } else {
+                                /* 无法打开上一章 */
                                 snprintf(shelf_status, sizeof(shelf_status),
-                                         "Failed to open the previous chapter.");
+                                         "\xE6\x97\xA0\xE6\xB3\x95\xE6\x89\x93\xE5\xBC\x80\xE4\xB8\x8A\xE4\xB8\x80\xE7\xAB\xA0");
                             }
                             free(target);
                         }
@@ -3782,8 +4001,9 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                 reader_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
                             } else {
+                                /* 无法打开上一章 */
                                 snprintf(shelf_status, sizeof(shelf_status),
-                                         "Failed to open the previous chapter.");
+                                         "\xE6\x97\xA0\xE6\xB3\x95\xE6\x89\x93\xE5\xBC\x80\xE4\xB8\x8A\xE4\xB8\x80\xE7\xAB\xA0");
                             }
                             free(target);
                         }
@@ -3808,8 +4028,9 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                 reader_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
                             } else {
+                                /* 无法打开下一章 */
                                 snprintf(shelf_status, sizeof(shelf_status),
-                                         "Failed to open the next chapter.");
+                                         "\xE6\x97\xA0\xE6\xB3\x95\xE6\x89\x93\xE5\xBC\x80\xE4\xB8\x8B\xE4\xB8\x80\xE7\xAB\xA0");
                             }
                             free(target);
                         }
@@ -3833,8 +4054,9 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                             if (reader_state.content_font_size > 44) reader_state.content_font_size = 24;
                         }
                         if (reader_reset_content_font(body_font, &reader_state) != 0) {
+                            /* 无法应用字体大小 */
                             snprintf(shelf_status, sizeof(shelf_status),
-                                     "Failed to apply the selected font size.");
+                                     "\xE6\x97\xA0\xE6\xB3\x95\xE5\xBA\x94\xE7\x94\xA8\xE5\xAD\x97\xE4\xBD\x93\xE5\xA4\xA7\xE5\xB0\x8F");
                             continue;
                         }
                         reader_rewrap(body_font, current_layout.reader_content_w,
@@ -3906,10 +4128,12 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                 }
             } else if (startup_state.session_ok == 0) {
                 view = VIEW_LOGIN;
-                snprintf(status, sizeof(status), "Generating QR code...");
+                /* 正在生成二维码... */
+                snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE7\x94\x9F\xE6\x88\x90\xE4\xBA\x8C\xE7\xBB\xB4\xE7\xA0\x81...");
                 begin_login_flow(ctx, &login_start, &login_thread, &view, status, sizeof(status), qr_path);
             } else if (!shelf_nuxt && view != VIEW_READER && view != VIEW_LOGIN) {
-                snprintf(status, sizeof(status), "Network error. Press A to retry.");
+                /* 网络错误，按 A 重试 */
+                snprintf(status, sizeof(status), "\xE7\xBD\x91\xE7\xBB\x9C\xE9\x94\x99\xE8\xAF\xAF\xEF\xBC\x8C\xE6\x8C\x89 A \xE9\x87\x8D\xE8\xAF\x95");
             }
             if (startup_state.poor_network) {
                 poor_network_toast_until = SDL_GetTicks() + 3000;
@@ -3942,8 +4166,9 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
             } else if (reader_open.failed || !reader_open.ready) {
                 if (shelf_nuxt) {
                     view = VIEW_SHELF;
+                    /* 无法打开所选书籍 */
                     snprintf(shelf_status, sizeof(shelf_status),
-                             "Failed to open the selected book.");
+                             "\xE6\x97\xA0\xE6\xB3\x95\xE6\x89\x93\xE5\xBC\x80\xE6\x89\x80\xE9\x80\x89\xE4\xB9\xA6\xE7\xB1\x8D");
                     reader_open_state_reset(&reader_open);
                 } else {
                     char retry_target[2048];
@@ -3956,8 +4181,9 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                     ui_copy_string(reader_open.book_id, sizeof(reader_open.book_id), retry_book_id);
                     reader_open.font_size = retry_font_size;
                     view = VIEW_OPENING;
+                    /* 打开失败，按 A 重试 */
                     snprintf(status, sizeof(status),
-                             "Failed to open. Press A to retry.");
+                             "\xE6\x89\x93\xE5\xBC\x80\xE5\xA4\xB1\xE8\xB4\xA5\xEF\xBC\x8C\xE6\x8C\x89 A \xE9\x87\x8D\xE8\xAF\x95");
                 }
             } else {
                 reader_open_state_reset(&reader_open);
@@ -3969,7 +4195,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
             login_thread = NULL;
             if (login_start.success) {
                 session = login_start.session;
-                snprintf(status, sizeof(status), "QR ready. Waiting for scan confirmation...");
+                /* 二维码已生成，等待扫码确认... */
+                snprintf(status, sizeof(status), "\xE4\xBA\x8C\xE7\xBB\xB4\xE7\xA0\x81\xE5\xB7\xB2\xE7\x94\x9F\xE6\x88\x90\xEF\xBC\x8C\xE7\xAD\x89\xE5\xBE\x85\xE6\x89\xAB\xE7\xA0\x81\xE7\xA1\xAE\xE8\xAE\xA4...");
                 login_active = 1;
                 last_poll = SDL_GetTicks();
                 memset(&login_poll, 0, sizeof(login_poll));
@@ -3981,10 +4208,12 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                 if (!login_poll_thread_handle) {
                     login_poll.running = 0;
                     login_active = 0;
-                    snprintf(status, sizeof(status), "Failed to create login poll thread.");
+                    /* 无法创建登录轮询线程 */
+                    snprintf(status, sizeof(status), "\xE6\x97\xA0\xE6\xB3\x95\xE5\x88\x9B\xE5\xBB\xBA\xE7\x99\xBB\xE5\xBD\x95\xE8\xBD\xAE\xE8\xAF\xA2\xE7\xBA\xBF\xE7\xA8\x8B");
                 }
             } else if (login_start.failed) {
-                snprintf(status, sizeof(status), "Failed to generate QR code.");
+                /* 二维码生成失败 */
+                snprintf(status, sizeof(status), "\xE4\xBA\x8C\xE7\xBB\xB4\xE7\xA0\x81\xE7\x94\x9F\xE6\x88\x90\xE5\xA4\xB1\xE8\xB4\xA5");
             }
         }
 
@@ -3992,9 +4221,11 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
             if (login_poll.running) {
                 if (SDL_GetTicks() - last_poll > 1200) {
                     if (login_poll.last_status == AUTH_POLL_SCANNED) {
-                        snprintf(status, sizeof(status), "QR scanned. Waiting for final confirmation...");
+                        /* 已扫码，等待确认... */
+                        snprintf(status, sizeof(status), "\xE5\xB7\xB2\xE6\x89\xAB\xE7\xA0\x81\xEF\xBC\x8C\xE7\xAD\x89\xE5\xBE\x85\xE7\xA1\xAE\xE8\xAE\xA4...");
                     } else {
-                        snprintf(status, sizeof(status), "Waiting for QR scan or confirmation...");
+                        /* 等待扫码或确认... */
+                        snprintf(status, sizeof(status), "\xE7\xAD\x89\xE5\xBE\x85\xE6\x89\xAB\xE7\xA0\x81\xE6\x88\x96\xE7\xA1\xAE\xE8\xAE\xA4...");
                     }
                     last_poll = SDL_GetTicks();
                 }
@@ -4013,7 +4244,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                     login_active = 0;
                     view = VIEW_SHELF;
                 } else {
-                    snprintf(status, sizeof(status), "Login wait stopped.");
+                    /* 登录等待已停止 */
+                    snprintf(status, sizeof(status), "\xE7\x99\xBB\xE5\xBD\x95\xE7\xAD\x89\xE5\xBE\x85\xE5\xB7\xB2\xE5\x81\x9C\xE6\xAD\xA2");
                     login_active = 0;
                 }
             }
