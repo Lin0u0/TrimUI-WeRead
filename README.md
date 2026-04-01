@@ -80,6 +80,18 @@ Extract `WeRead-macos.tar.gz` and run `./run.sh` from inside the extracted folde
 - This release focuses on the core reading path first: login, bookshelf, reader, and progress sync.
 - Release assets are split by platform so each system can use the package that matches its folder layout and launcher conventions.
 
+## Controls
+
+- `A` opens the selected book and turns pages forward in the reader
+- `B` goes back
+- `X` resumes the last book from the shelf and opens the catalog in the reader
+- `Y` or `+/-` changes reader font size
+- `Tab` rotates the UI
+- `T` toggles dark mode
+- On TrimUI Brick (`tg5040`), `Menu`, `Select`, and `Start` are left to the system so NextUI / firmware hotkeys can handle them
+- On TrimUI Brick (`tg5040`), `L3` toggles dark mode and `R3` rotates the UI inside the app
+- Press the device lock or power button in-app to suspend the device
+
 ## Building from Source
 
 ### macOS (native)

@@ -22,5 +22,7 @@ int state_load_reader_position_by_book_id(ApiContext *ctx, const char *book_id,
                                           int *current_page, int *current_offset);
 int state_save_dark_mode(ApiContext *ctx, int dark_mode);
 int state_load_dark_mode(ApiContext *ctx);
+int state_save_brightness_level(ApiContext *ctx, int brightness_level);
+int state_load_brightness_level(ApiContext *ctx, int *brightness_level);
 
 #endif

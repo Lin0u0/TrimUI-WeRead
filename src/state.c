@@ -290,13 +290,22 @@ int state_load_reader_position_by_book_id(ApiContext *ctx, const char *book_id,
 }
 
 int state_save_dark_mode(ApiContext *ctx, int dark_mode) {
-    cJSON *json = cJSON_CreateObject();
+    cJSON *json = state_read_json(ctx, "preferences.json");
     int rc;
 
-    if (!json) {
-        return -1;
+    if (!json || !cJSON_IsObject(json)) {
+        cJSON_Delete(json);
+        json = cJSON_CreateObject();
+        if (!json) {
+            return -1;
+        }
     }
-    cJSON_AddNumberToObject(json, "darkMode", dark_mode ? 1 : 0);
+    if (cJSON_GetObjectItemCaseSensitive(json, "darkMode")) {
+        cJSON_ReplaceItemInObjectCaseSensitive(json, "darkMode",
+                                               cJSON_CreateNumber(dark_mode ? 1 : 0));
+    } else {
+        cJSON_AddNumberToObject(json, "darkMode", dark_mode ? 1 : 0);
+    }
     rc = state_write_json(ctx, "preferences.json", json);
     cJSON_Delete(json);
     return rc;
@@ -312,4 +321,46 @@ int state_load_dark_mode(ApiContext *ctx) {
     value = json_get_int(json, "darkMode", 0);
     cJSON_Delete(json);
     return value;
+}
+
+int state_save_brightness_level(ApiContext *ctx, int brightness_level) {
+    cJSON *json = state_read_json(ctx, "preferences.json");
+    int rc;
+
+    if (!json || !cJSON_IsObject(json)) {
+        cJSON_Delete(json);
+        json = cJSON_CreateObject();
+        if (!json) {
+            return -1;
+        }
+    }
+    if (cJSON_GetObjectItemCaseSensitive(json, "brightnessLevel")) {
+        cJSON_ReplaceItemInObjectCaseSensitive(json, "brightnessLevel",
+                                               cJSON_CreateNumber(brightness_level));
+    } else {
+        cJSON_AddNumberToObject(json, "brightnessLevel", brightness_level);
+    }
+    rc = state_write_json(ctx, "preferences.json", json);
+    cJSON_Delete(json);
+    return rc;
+}
+
+int state_load_brightness_level(ApiContext *ctx, int *brightness_level) {
+    cJSON *json = state_read_json(ctx, "preferences.json");
+
+    if (!brightness_level) {
+        return -1;
+    }
+    if (!json) {
+        return -1;
+    }
+
+    if (!cJSON_HasObjectItem(json, "brightnessLevel")) {
+        cJSON_Delete(json);
+        return -1;
+    }
+
+    *brightness_level = json_get_int(json, "brightnessLevel", 7);
+    cJSON_Delete(json);
+    return 0;
 }

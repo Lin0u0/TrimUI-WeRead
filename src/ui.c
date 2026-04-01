@@ -7,11 +7,14 @@
 #include <SDL_ttf.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "stb_image.h"
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
@@ -61,6 +64,16 @@ typedef struct {
     UiRepeatAction action;
     Uint32 next_tick;
 } UiRepeatState;
+
+typedef struct {
+    float shelf_selected_visual;
+    int shelf_initialized;
+    float catalog_progress;
+    Uint32 last_tick;
+    Uint32 view_fade_start_tick;
+    Uint32 view_fade_duration_ms;
+    int view_fade_active;
+} UiMotionState;
 
 typedef struct {
     ReaderDocument doc;
@@ -280,7 +293,17 @@ enum {
     UI_INPUT_REPEAT_INTERVAL_MS = 85,
     UI_PROGRESS_REPORT_INTERVAL_MS = 30000,
     UI_PROGRESS_PAUSE_TIMEOUT_MS = 120000,
-    UI_CHAPTER_PREFETCH_RADIUS = 5
+    UI_CHAPTER_PREFETCH_RADIUS = 5,
+    UI_TOAST_DURATION_MS = 3000,
+    UI_TOAST_FADE_MS = 280,
+    UI_VIEW_FADE_DURATION_MS = 320
+};
+
+enum {
+    UI_BRIGHTNESS_MIN = 0,
+    UI_BRIGHTNESS_MAX = 10,
+    UI_BRIGHTNESS_DEFAULT = 7,
+    DISP_LCD_SET_BRIGHTNESS = 0x102
 };
 
 static UiLayout ui_layout_for_rotation(UiRotation rotation) {
@@ -413,6 +436,33 @@ static const UiTheme *ui_current_theme(void) {
     return ui_dark_mode ? &ui_theme_dark : &ui_theme_light;
 }
 
+static float ui_clamp01f(float value) {
+    if (value < 0.0f) {
+        return 0.0f;
+    }
+    if (value > 1.0f) {
+        return 1.0f;
+    }
+    return value;
+}
+
+static float ui_ease_out_cubic(float value) {
+    float t = ui_clamp01f(value);
+    float inv = 1.0f - t;
+
+    return 1.0f - inv * inv * inv;
+}
+
+static float ui_motion_step(float current, float target, float speed, float dt_seconds) {
+    float factor;
+
+    if (dt_seconds <= 0.0f) {
+        return current;
+    }
+    factor = ui_clamp01f(speed * dt_seconds);
+    return current + (target - current) * factor;
+}
+
 enum {
     TG5040_JOY_B = 0,
     TG5040_JOY_A = 1,
@@ -426,6 +476,96 @@ enum {
     TG5040_JOY_L2 = 9,
     TG5040_JOY_R2 = 10
 };
+
+static int ui_tg5040_scale_brightness(int level) {
+    switch (level) {
+    case 0: return 1;
+    case 1: return 8;
+    case 2: return 16;
+    case 3: return 32;
+    case 4: return 48;
+    case 5: return 72;
+    case 6: return 96;
+    case 7: return 128;
+    case 8: return 160;
+    case 9: return 192;
+    case 10:
+    default:
+        return 255;
+    }
+}
+
+static int ui_platform_apply_brightness_level(int tg5040_input, int level) {
+    unsigned long param[4] = { 0, 0, 0, 0 };
+    int fd;
+
+    if (!tg5040_input) {
+        return -1;
+    }
+    if (level < UI_BRIGHTNESS_MIN) {
+        level = UI_BRIGHTNESS_MIN;
+    } else if (level > UI_BRIGHTNESS_MAX) {
+        level = UI_BRIGHTNESS_MAX;
+    }
+
+    fd = open("/dev/disp", O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+
+    param[1] = (unsigned long)ui_tg5040_scale_brightness(level);
+    if (ioctl(fd, DISP_LCD_SET_BRIGHTNESS, &param) != 0) {
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+
+static int ui_platform_step_brightness(ApiContext *ctx, int tg5040_input, int delta,
+                                       int *brightness_level) {
+    int next_level;
+
+    if (!brightness_level || delta == 0) {
+        return -1;
+    }
+
+    next_level = *brightness_level;
+    if (next_level < UI_BRIGHTNESS_MIN || next_level > UI_BRIGHTNESS_MAX) {
+        next_level = UI_BRIGHTNESS_DEFAULT;
+    }
+    next_level += delta;
+    if (next_level < UI_BRIGHTNESS_MIN) {
+        next_level = UI_BRIGHTNESS_MIN;
+    } else if (next_level > UI_BRIGHTNESS_MAX) {
+        next_level = UI_BRIGHTNESS_MAX;
+    }
+    if (next_level == *brightness_level && *brightness_level >= UI_BRIGHTNESS_MIN &&
+        *brightness_level <= UI_BRIGHTNESS_MAX) {
+        return 0;
+    }
+    if (ui_platform_apply_brightness_level(tg5040_input, next_level) != 0) {
+        return -1;
+    }
+
+    *brightness_level = next_level;
+    if (ctx) {
+        state_save_brightness_level(ctx, next_level);
+    }
+    return 0;
+}
+
+static int ui_platform_lock_screen(int tg5040_input) {
+    int rc;
+
+    if (!tg5040_input) {
+        return -1;
+    }
+
+    sync();
+    rc = system("sh -c 'echo mem > /sys/power/state'");
+    return rc == 0 ? 0 : -1;
+}
 
 static int ui_is_tg5040_platform(const char *platform) {
     return platform && strcmp(platform, "tg5040") == 0;
@@ -491,8 +631,7 @@ static int ui_event_is_right(const SDL_Event *event, int tg5040_input) {
 static int ui_event_is_back(const SDL_Event *event, int tg5040_input) {
     return ui_event_is_keydown(event, SDLK_ESCAPE) ||
            ui_event_is_keydown(event, SDLK_b) ||
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_B) ||
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_MENU);
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_B);
 }
 
 static int ui_event_is_confirm(const SDL_Event *event, int tg5040_input) {
@@ -518,14 +657,8 @@ static int ui_event_is_rotate(const SDL_Event *event, int tg5040_input) {
 
 static int ui_event_is_rotate_combo(const SDL_Event *event, int tg5040_input,
                                     int select_pressed, int start_pressed) {
-    if (ui_event_is_rotate(event, tg5040_input)) {
-        return 1;
-    }
-    return tg5040_input &&
-           ((ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_START) &&
-             select_pressed) ||
-            (ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_SELECT) &&
-             start_pressed));
+    return ui_event_is_rotate(event, tg5040_input) ||
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_R2);
 }
 
 static int ui_event_is_dark_mode_toggle(const SDL_Event *event, int tg5040_input,
@@ -533,8 +666,28 @@ static int ui_event_is_dark_mode_toggle(const SDL_Event *event, int tg5040_input
     if (ui_event_is_keydown(event, SDLK_t)) {
         return 1;
     }
-    return tg5040_input && select_pressed &&
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_Y);
+    return ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_L2);
+}
+
+static int ui_event_is_brightness_up(const SDL_Event *event, int tg5040_input,
+                                     int start_pressed) {
+    if (ui_event_is_keydown(event, SDLK_RIGHTBRACKET)) {
+        return 1;
+    }
+    return 0;
+}
+
+static int ui_event_is_brightness_down(const SDL_Event *event, int tg5040_input,
+                                       int start_pressed) {
+    if (ui_event_is_keydown(event, SDLK_LEFTBRACKET)) {
+        return 1;
+    }
+    return 0;
+}
+
+static int ui_event_is_lock_button(const SDL_Event *event) {
+    return ui_event_is_keydown(event, SDLK_POWER) ||
+           ui_event_is_keydown(event, SDLK_p);
 }
 
 static int ui_event_is_chapter_prev(const SDL_Event *event, int tg5040_input) {
@@ -549,15 +702,13 @@ static int ui_event_is_chapter_next(const SDL_Event *event, int tg5040_input) {
 
 static int ui_event_is_page_prev(const SDL_Event *event, int tg5040_input) {
     return ui_event_is_left(event, tg5040_input) ||
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_L1) ||
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_L2);
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_L1);
 }
 
 static int ui_event_is_page_next(const SDL_Event *event, int tg5040_input) {
     return ui_event_is_right(event, tg5040_input) ||
            ui_event_is_confirm(event, tg5040_input) ||
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_R1) ||
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_R2);
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_R1);
 }
 
 static int ui_any_joystick_button_pressed(SDL_Joystick **joysticks, int joystick_count, Uint8 button) {
@@ -640,8 +791,7 @@ static int ui_input_is_right_held(int tg5040_input, SDL_Joystick **joysticks, in
 static int ui_input_is_page_prev_held(int tg5040_input, SDL_Joystick **joysticks, int joystick_count) {
     return ui_input_is_left_held(tg5040_input, joysticks, joystick_count) ||
            (tg5040_input &&
-            (ui_any_joystick_button_pressed(joysticks, joystick_count, TG5040_JOY_L1) ||
-             ui_any_joystick_button_pressed(joysticks, joystick_count, TG5040_JOY_L2)));
+            ui_any_joystick_button_pressed(joysticks, joystick_count, TG5040_JOY_L1));
 }
 
 static int ui_input_is_page_next_held(int tg5040_input, SDL_Joystick **joysticks, int joystick_count) {
@@ -651,8 +801,7 @@ static int ui_input_is_page_next_held(int tg5040_input, SDL_Joystick **joysticks
            (keys && (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_SPACE])) ||
            (tg5040_input &&
             (ui_any_joystick_button_pressed(joysticks, joystick_count, TG5040_JOY_A) ||
-             ui_any_joystick_button_pressed(joysticks, joystick_count, TG5040_JOY_R1) ||
-             ui_any_joystick_button_pressed(joysticks, joystick_count, TG5040_JOY_R2)));
+             ui_any_joystick_button_pressed(joysticks, joystick_count, TG5040_JOY_R1)));
 }
 
 static UiRepeatAction ui_repeat_action_current(UiView view, const ReaderViewState *reader_state,
@@ -887,7 +1036,8 @@ static int ui_recreate_scene_texture(SDL_Renderer *renderer, SDL_Texture **scene
     return 0;
 }
 
-static int ui_present_scene(SDL_Renderer *renderer, SDL_Texture *scene, UiRotation rotation) {
+static int ui_present_scene(SDL_Renderer *renderer, SDL_Texture *scene, UiRotation rotation,
+                            Uint8 alpha) {
     int output_w, output_h;
     SDL_Rect dst;
     SDL_Point center;
@@ -900,6 +1050,8 @@ static int ui_present_scene(SDL_Renderer *renderer, SDL_Texture *scene, UiRotati
     SDL_GetRendererOutputSize(renderer, &output_w, &output_h);
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
+    SDL_SetTextureBlendMode(scene, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureAlphaMod(scene, alpha);
 
     if (rotation == UI_ROTATE_LANDSCAPE) {
         return SDL_RenderCopy(renderer, scene, NULL, NULL);
@@ -1560,19 +1712,31 @@ static void render_poor_network_toast(SDL_Renderer *renderer, TTF_Font *body_fon
     SDL_Rect bg;
     Uint8 alpha;
     Uint32 remaining;
+    Uint32 elapsed;
+    float phase = 1.0f;
+    float slide_progress = 1.0f;
+    int base_y;
 
     if (!body_font || now >= toast_until) {
         return;
     }
 
     remaining = toast_until - now;
-    alpha = remaining < 500 ? (Uint8)(remaining * 255 / 500) : 200;
+    elapsed = UI_TOAST_DURATION_MS > remaining ? UI_TOAST_DURATION_MS - remaining : 0;
+    if (elapsed < UI_TOAST_FADE_MS) {
+        phase = ui_ease_out_cubic((float)elapsed / (float)UI_TOAST_FADE_MS);
+    } else if (remaining < UI_TOAST_FADE_MS) {
+        phase = ui_clamp01f((float)remaining / (float)UI_TOAST_FADE_MS);
+    }
+    alpha = (Uint8)(210.0f * phase);
+    slide_progress = ui_ease_out_cubic(phase);
 
     TTF_SizeUTF8(body_font, msg, &tw, &th);
     bg.w = tw + pad_x * 2;
     bg.h = th + pad_y * 2;
     bg.x = (canvas_w - bg.w) / 2;
-    bg.y = canvas_h - bg.h - 24;  /* Position at bottom with 24px margin */
+    base_y = canvas_h - bg.h - 24;
+    bg.y = base_y + (int)((1.0f - slide_progress) * 18.0f);
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, alpha);
@@ -1630,8 +1794,9 @@ static void render_loading(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Fon
 
 static void render_shelf_cover(SDL_Renderer *renderer, TTF_Font *body_font, SDL_Color ink,
                                SDL_Rect cover_rect, ShelfCoverEntry *entry,
-                               const char *title, int selected) {
-    const float scale = selected ? 1.16f : 1.0f;
+                               const char *title, float emphasis) {
+    const float clamped_emphasis = ui_clamp01f(emphasis);
+    const float scale = 1.0f + 0.18f * clamped_emphasis;
     SDL_Rect scaled_rect = {
         cover_rect.x - (int)((cover_rect.w * scale - cover_rect.w) / 2.0f),
         cover_rect.y - (int)((cover_rect.h * scale - cover_rect.h) / 2.0f),
@@ -1646,9 +1811,12 @@ static void render_shelf_cover(SDL_Renderer *renderer, TTF_Font *body_font, SDL_
     };
 
     const UiTheme *theme = ui_current_theme();
+    Uint8 border_alpha = (Uint8)(255.0f * clamped_emphasis);
+    Uint8 shadow_alpha = (Uint8)(theme->shadow_a * (0.7f + clamped_emphasis * 0.3f));
+    (void)title;
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer, theme->shadow_r, theme->shadow_g, theme->shadow_b, theme->shadow_a);
+    SDL_SetRenderDrawColor(renderer, theme->shadow_r, theme->shadow_g, theme->shadow_b, shadow_alpha);
     SDL_Rect shadow = {
         scaled_rect.x + 8,
         scaled_rect.y + 10,
@@ -1657,9 +1825,9 @@ static void render_shelf_cover(SDL_Renderer *renderer, TTF_Font *body_font, SDL_
     };
     SDL_RenderFillRect(renderer, &shadow);
 
-    if (selected) {
+    if (border_alpha > 0) {
         SDL_SetRenderDrawColor(renderer, theme->selection_border_r, theme->selection_border_g,
-                               theme->selection_border_b, 255);
+                               theme->selection_border_b, border_alpha);
         SDL_RenderFillRect(renderer, &border);
     }
 
@@ -1678,31 +1846,27 @@ static void render_shelf_cover(SDL_Renderer *renderer, TTF_Font *body_font, SDL_
 
 static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
                          ApiContext *ctx, cJSON *nuxt, ShelfCoverCache *cover_cache,
-                         int selected, int start, const char *status, const UiLayout *layout) {
+                         int selected, float selected_pos, int start,
+                         const char *status, const UiLayout *layout) {
     const int margin = 32;
     const int cover_w = 272;
     const int cover_h = 382;
-    const int card_gap = 36;
+    const int card_gap = 64;
     const int header_h = 60;
     const int canvas_w = layout ? layout->canvas_w : UI_CANVAS_WIDTH;
     const int window_w = layout ? layout->content_w : canvas_w;
     const int window_x = layout ? layout->content_x : 0;
     const int window_h = layout ? layout->canvas_h : UI_CANVAS_HEIGHT;
-    const float selected_scale = 1.18f;
     const UiTheme *theme = ui_current_theme();
     SDL_Color ink = theme->ink;
     SDL_Color muted = theme->muted;
     SDL_Color line = theme->line;
     cJSON *books = shelf_books(nuxt);
     int count = books && cJSON_IsArray(books) ? cJSON_GetArraySize(books) : 0;
-    int selected_extra_w;
-    int selected_extra_h;
     int start_y;
     int content_top = header_h;
     int content_bottom = window_h - 56;
     int content_h = content_bottom - content_top;
-    int scaled_cover_h;
-    int visual_cover_h;
     cJSON *selected_book = NULL;
     const char *selected_title = NULL;
     time_t now = time(NULL);
@@ -1721,11 +1885,7 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     (void)status;
     (void)start;
 
-    selected_extra_w = (int)(cover_w * selected_scale) - cover_w;
-    selected_extra_h = (int)(cover_h * selected_scale) - cover_h;
-    scaled_cover_h = (int)(cover_h * selected_scale);
-    visual_cover_h = scaled_cover_h + 16;
-    start_y = content_top + (content_h - visual_cover_h) / 2 + 6 + selected_extra_h / 2;
+    start_y = content_top + (content_h - (int)(cover_h * 1.22f)) / 2 + 16;
     if (start_y < content_top) {
         start_y = content_top;
     }
@@ -1762,10 +1922,11 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
                       title_buf, sizeof(title_buf));
     draw_text(renderer, title_font, window_x + margin, title_y, ink, title_buf);
 
-    for (int i = selected - 2; i <= selected + 2; i++) {
+    for (int i = (int)floorf(selected_pos) - 3; i <= (int)ceilf(selected_pos) + 3; i++) {
         cJSON *book = cJSON_GetArrayItem(books, i);
         const char *title;
-        int card_index;
+        float offset;
+        float emphasis;
         SDL_Rect cover_rect = {
             0,
             start_y,
@@ -1777,25 +1938,17 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
             continue;
         }
         title = json_get_string(book, "title");
-        card_index = i - selected;
-        if (card_index == 0) {
-            cover_rect.x = window_x + (window_w - cover_w) / 2;
-        } else if (card_index < 0) {
-            cover_rect.x = window_x + (window_w - cover_w) / 2 +
-                           card_index * (cover_w + card_gap) -
-                           selected_extra_w / 2;
-        } else {
-            cover_rect.x = window_x + (window_w - cover_w) / 2 +
-                           card_index * (cover_w + card_gap) +
-                           selected_extra_w / 2;
-        }
+        offset = (float)i - selected_pos;
+        emphasis = 1.0f - fabsf(offset);
+        cover_rect.x = window_x + (window_w - cover_w) / 2 +
+                       (int)lroundf(offset * (float)(cover_w + card_gap));
 
         if (cover_cache && i < cover_cache->count) {
             shelf_cover_prepare(ctx, renderer, &cover_cache->entries[i]);
         }
         render_shelf_cover(renderer, body_font, ink, cover_rect,
                            cover_cache && i < cover_cache->count ? &cover_cache->entries[i] : NULL,
-                           title, i == selected);
+                           title, emphasis);
     }
 
     if (selected > 0) {
@@ -3513,7 +3666,8 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
 }
 
 static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
-                                   ReaderViewState *state, const UiLayout *layout) {
+                                   ReaderViewState *state, float progress,
+                                   const UiLayout *layout) {
     const UiTheme *theme = ui_current_theme();
     SDL_Color ink = theme->ink;
     SDL_Color dim = theme->dim;
@@ -3533,8 +3687,15 @@ static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font,
     int end;
     char title_buf[256];
     int header_title_y;
+    float eased = ui_ease_out_cubic(progress);
+    int panel_offset;
+    Uint8 backdrop_alpha;
+    Uint8 panel_alpha;
 
     if (!state || !state->doc.catalog_items || state->doc.catalog_count <= 0) {
+        return;
+    }
+    if (progress <= 0.0f) {
         return;
     }
     if (panel.x < cx) {
@@ -3543,6 +3704,9 @@ static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font,
         header.x = panel.x;
         header.w = panel.w;
     }
+    panel_offset = (int)lroundf((1.0f - eased) * 48.0f);
+    panel.x += panel_offset;
+    header.x = panel.x;
     list_top = header.y + header.h + 12;
     visible = line_height > 0 ? (panel.h - 116) / line_height : 15;
     if (visible < 6) {
@@ -3561,15 +3725,17 @@ static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font,
         }
     }
 
+    backdrop_alpha = (Uint8)(theme->backdrop_a * eased);
+    panel_alpha = (Uint8)(255.0f * (0.82f + 0.18f * eased));
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(renderer, theme->backdrop_r, theme->backdrop_g,
-                           theme->backdrop_b, theme->backdrop_a);
+                           theme->backdrop_b, backdrop_alpha);
     SDL_RenderFillRect(renderer, &backdrop);
     SDL_SetRenderDrawColor(renderer, theme->catalog_panel_r, theme->catalog_panel_g,
-                           theme->catalog_panel_b, 255);
+                           theme->catalog_panel_b, panel_alpha);
     SDL_RenderFillRect(renderer, &panel);
     SDL_SetRenderDrawColor(renderer, theme->catalog_header_r, theme->catalog_header_g,
-                           theme->catalog_header_b, 255);
+                           theme->catalog_header_b, panel_alpha);
     SDL_RenderFillRect(renderer, &header);
     draw_rect_outline(renderer, &panel, line, 1);
 
@@ -3762,10 +3928,12 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     int tg5040_input = ui_is_tg5040_platform(platform);
     int tg5040_select_pressed = 0;
     int tg5040_start_pressed = 0;
+    int brightness_level = -1;
     int joystick_count = 0;
     UiRotation rotation = UI_ROTATE_LANDSCAPE;
     UiLayout current_layout = ui_layout_for_rotation(UI_ROTATE_LANDSCAPE);
     UiRepeatState repeat_state;
+    UiMotionState motion_state;
     Uint32 poor_network_toast_until = 0;
     int rc = -1;
 
@@ -3780,6 +3948,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     memset(&chapter_prefetch_cache, 0, sizeof(chapter_prefetch_cache));
     memset(&reader_state, 0, sizeof(reader_state));
     memset(&repeat_state, 0, sizeof(repeat_state));
+    memset(&motion_state, 0, sizeof(motion_state));
     snprintf(qr_path, sizeof(qr_path), "%s/weread-login-qr.png", ctx->data_dir);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_JOYSTICK) != 0) {
@@ -3838,6 +4007,9 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     }
 
     ui_dark_mode = state_load_dark_mode(ctx);
+    if (state_load_brightness_level(ctx, &brightness_level) == 0) {
+        ui_platform_apply_brightness_level(tg5040_input, brightness_level);
+    }
 
     shelf_nuxt = state_read_json(ctx, "shelf.json");
     if (shelf_nuxt && shelf_books(shelf_nuxt) && cJSON_IsArray(shelf_books(shelf_nuxt))) {
@@ -3856,6 +4028,13 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
 
     while (running) {
         SDL_Event event;
+        Uint32 frame_now = SDL_GetTicks();
+        float dt_seconds = motion_state.last_tick > 0 && frame_now > motion_state.last_tick ?
+            (float)(frame_now - motion_state.last_tick) / 1000.0f : 0.0f;
+        UiView frame_view_before_updates = view;
+        int catalog_open_before_updates = reader_state.catalog_open;
+
+        motion_state.last_tick = frame_now;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = 0;
@@ -3895,6 +4074,36 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                                         tg5040_select_pressed)) {
                     ui_dark_mode = !ui_dark_mode;
                     state_save_dark_mode(ctx, ui_dark_mode);
+                } else if (ui_event_is_brightness_up(&event, tg5040_input,
+                                                     tg5040_start_pressed)) {
+                    if (ui_platform_step_brightness(ctx, tg5040_input, 1,
+                                                    &brightness_level) != 0) {
+                        snprintf(shelf_status, sizeof(shelf_status),
+                                 "\xE6\x97\xA0\xE6\xB3\x95\xE8\xB0\x83\xE6\x95\xB4\xE4\xBA\xAE\xE5\xBA\xA6");
+                    } else {
+                        snprintf(shelf_status, sizeof(shelf_status),
+                                 "\xE4\xBA\xAE\xE5\xBA\xA6 %d/10", brightness_level);
+                    }
+                } else if (ui_event_is_brightness_down(&event, tg5040_input,
+                                                       tg5040_start_pressed)) {
+                    if (ui_platform_step_brightness(ctx, tg5040_input, -1,
+                                                    &brightness_level) != 0) {
+                        snprintf(shelf_status, sizeof(shelf_status),
+                                 "\xE6\x97\xA0\xE6\xB3\x95\xE8\xB0\x83\xE6\x95\xB4\xE4\xBA\xAE\xE5\xBA\xA6");
+                    } else {
+                        snprintf(shelf_status, sizeof(shelf_status),
+                                 "\xE4\xBA\xAE\xE5\xBA\xA6 %d/10", brightness_level);
+                    }
+                } else if (ui_event_is_lock_button(&event)) {
+                    if (view == VIEW_READER) {
+                        reader_progress_flush_blocking(ctx, &reader_state, 1);
+                        reader_save_local_position(ctx, &reader_state);
+                    }
+                    if (ui_platform_lock_screen(tg5040_input) == 0 &&
+                        brightness_level >= UI_BRIGHTNESS_MIN &&
+                        brightness_level <= UI_BRIGHTNESS_MAX) {
+                        ui_platform_apply_brightness_level(tg5040_input, brightness_level);
+                    }
                 } else if (ui_event_is_rotate_combo(&event, tg5040_input,
                                                     tg5040_select_pressed,
                                                     tg5040_start_pressed)) {
@@ -3932,9 +4141,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                 view = VIEW_OPENING;
                             }
                         }
-                    } else if ((ui_event_is_confirm(&event, tg5040_input) ||
-                                ui_event_is_tg5040_button_down(&event, tg5040_input, TG5040_JOY_START)) &&
-                               count > 0) {
+                    } else if (ui_event_is_confirm(&event, tg5040_input) && count > 0) {
                         cJSON *book = cJSON_GetArrayItem(books, selected);
                         cJSON *urls = shelf_reader_urls(shelf_nuxt);
                         const char *target = shelf_reader_target(urls, selected);
@@ -3961,8 +4168,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                     }
                 } else if (view == VIEW_LOGIN) {
                     if ((ui_event_is_confirm(&event, tg5040_input) ||
-                         ui_event_is_keydown(&event, SDLK_l) ||
-                         ui_event_is_tg5040_button_down(&event, tg5040_input, TG5040_JOY_START)) &&
+                         ui_event_is_keydown(&event, SDLK_l)) &&
                         !login_start.running && !login_active) {
                         begin_login_flow(ctx, &login_start, &login_thread, &view,
                                          status, sizeof(status), qr_path);
@@ -4185,10 +4391,6 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                             }
                             free(target);
                         }
-                    } else if (ui_event_is_tg5040_button_down(&event, tg5040_input, TG5040_JOY_START)) {
-                        if (reader_state.doc.catalog_count > 0) {
-                            reader_open_catalog(ctx, &reader_state, shelf_status, sizeof(shelf_status));
-                        }
                     } else if (ui_event_is_tg5040_button_down(&event, tg5040_input, TG5040_JOY_Y) ||
                                ui_event_is_keydown(&event, SDLK_EQUALS) ||
                                ui_event_is_keydown(&event, SDLK_MINUS)) {
@@ -4347,6 +4549,29 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
             }
         }
 
+        if (!motion_state.shelf_initialized) {
+            motion_state.shelf_selected_visual = (float)selected;
+            motion_state.shelf_initialized = 1;
+        } else {
+            motion_state.shelf_selected_visual =
+                ui_motion_step(motion_state.shelf_selected_visual, (float)selected, 10.0f, dt_seconds);
+            if (fabsf(motion_state.shelf_selected_visual - (float)selected) < 0.001f) {
+                motion_state.shelf_selected_visual = (float)selected;
+            }
+        }
+        motion_state.catalog_progress =
+            ui_motion_step(motion_state.catalog_progress, reader_state.catalog_open ? 1.0f : 0.0f,
+                           12.0f, dt_seconds);
+        if (fabsf(motion_state.catalog_progress - (reader_state.catalog_open ? 1.0f : 0.0f)) < 0.001f) {
+            motion_state.catalog_progress = reader_state.catalog_open ? 1.0f : 0.0f;
+        }
+        if (frame_view_before_updates != view ||
+            (view == VIEW_READER && catalog_open_before_updates != reader_state.catalog_open)) {
+            motion_state.view_fade_active = 1;
+            motion_state.view_fade_start_tick = SDL_GetTicks();
+            motion_state.view_fade_duration_ms = UI_VIEW_FADE_DURATION_MS;
+        }
+
         if (view == VIEW_LOGIN && login_start.running == 0 && login_thread) {
             SDL_WaitThread(login_thread, NULL);
             login_thread = NULL;
@@ -4414,14 +4639,16 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
             render_login(renderer, title_font, body_font, &session, status, &current_layout);
         } else if (view == VIEW_READER) {
             render_reader(renderer, title_font, body_font, &reader_state, &current_layout);
-            if (reader_state.catalog_open) {
-                render_catalog_overlay(renderer, title_font, body_font, &reader_state, &current_layout);
+            if (motion_state.catalog_progress > 0.001f) {
+                render_catalog_overlay(renderer, title_font, body_font, &reader_state,
+                                       motion_state.catalog_progress, &current_layout);
             }
         } else if (view == VIEW_BOOTSTRAP || view == VIEW_OPENING) {
             render_loading(renderer, title_font, body_font, loading_title, status, &current_layout);
         } else {
             render_shelf(renderer, title_font, body_font, ctx, shelf_nuxt, &shelf_covers,
-                         selected, shelf_start, shelf_status, &current_layout);
+                         selected, motion_state.shelf_selected_visual,
+                         shelf_start, shelf_status, &current_layout);
         }
         if (ctx->poor_network) {
             ctx->poor_network = 0;
@@ -4430,7 +4657,22 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
         if (poor_network_toast_until > SDL_GetTicks()) {
             render_poor_network_toast(renderer, body_font, poor_network_toast_until, &current_layout);
         }
-        ui_present_scene(renderer, scene_texture, rotation);
+        {
+            Uint8 scene_alpha = 255;
+
+            if (motion_state.view_fade_active) {
+                Uint32 elapsed = SDL_GetTicks() - motion_state.view_fade_start_tick;
+                float progress = motion_state.view_fade_duration_ms > 0 ?
+                    (float)elapsed / (float)motion_state.view_fade_duration_ms : 1.0f;
+
+                if (progress >= 1.0f) {
+                    motion_state.view_fade_active = 0;
+                } else {
+                    scene_alpha = (Uint8)(112.0f + ui_ease_out_cubic(progress) * 143.0f);
+                }
+            }
+            ui_present_scene(renderer, scene_texture, rotation, scene_alpha);
+        }
         SDL_RenderPresent(renderer);
     }
 

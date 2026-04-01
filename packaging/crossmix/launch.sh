@@ -14,10 +14,6 @@ export CURL_CA_BUNDLE="$APP_DIR/res/cacert.pem"
 
 exec > "$LOG_DIR/launch.txt" 2>&1
 
-# Hide the system OSD status bar for full-screen display without forcing
-# trimui_osdd to re-run its startup scripts on resume.
-killall -STOP trimui_osdd 2>/dev/null
-
 # SD card is vfat — cannot exec directly, copy binary to /tmp
 cp "$APP_DIR/bin/tg5040/weread" /tmp/weread
 chmod +x /tmp/weread
@@ -29,6 +25,3 @@ chmod +x /tmp/weread
   --platform tg5040
 
 rm -f /tmp/weread
-
-# Restore the system OSD status bar
-killall -CONT trimui_osdd 2>/dev/null
