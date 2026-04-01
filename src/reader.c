@@ -2060,6 +2060,31 @@ static int ensure_random_font(ApiContext *ctx, char *path, size_t path_size) {
     return 0;
 }
 
+int reader_warmup_font(ApiContext *ctx) {
+    char path[512];
+
+    if (!ctx) {
+        return -1;
+    }
+    return ensure_random_font(ctx, path, sizeof(path));
+}
+
+static int cached_random_font_path(ApiContext *ctx, char *path, size_t path_size) {
+    struct stat st;
+
+    if (!ctx || !path || path_size == 0) {
+        return -1;
+    }
+    if (join_path_checked(path, path_size, ctx->data_dir, "fzys_reversed.ttf") != 0) {
+        return -1;
+    }
+    if (stat(path, &st) != 0 || st.st_size <= 0) {
+        path[0] = '\0';
+        return -1;
+    }
+    return 0;
+}
+
 static char *build_reader_url(ApiContext *ctx, const char *target, int font_size) {
     char *escaped;
     char *url;
@@ -2300,7 +2325,7 @@ static int reader_load_internal(ApiContext *ctx, const char *target, int font_si
         goto cleanup;
     }
     reader_focus_catalog(ctx, doc);
-    if (ensure_random_font(ctx, doc->content_font_path, sizeof(doc->content_font_path)) == 0) {
+    if (cached_random_font_path(ctx, doc->content_font_path, sizeof(doc->content_font_path)) == 0) {
         doc->use_content_font = 1;
     }
 

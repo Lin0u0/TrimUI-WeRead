@@ -27,7 +27,7 @@ typedef struct {
     char cookie_file[512];
     char ca_file[512];
     char error_buf[CURL_ERROR_SIZE];
-    int poor_network;  /* set to 1 when a request needed retries */
+    int poor_network;  /* set to 1 when a request ultimately failed for network reasons */
 } ApiContext;
 
 /* Initialize/cleanup */

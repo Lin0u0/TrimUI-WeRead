@@ -244,6 +244,8 @@ static void ui_platform_shutdown_haptics(UiHapticState *state);
 static void ui_platform_haptic_poll(UiHapticState *state, Uint32 now);
 static void ui_platform_haptic_pulse(UiHapticState *state, Uint32 duration_ms,
                                      Uint32 cooldown_ms);
+static Uint32 ui_frame_interval_ms(UiView view, const UiMotionState *motion_state,
+                                   Uint32 poor_network_toast_until, Uint32 now);
 
 static int ui_join_path_checked(char *dst, size_t dst_size, const char *dir, const char *name) {
     size_t dir_len;
@@ -304,6 +306,9 @@ enum {
     UI_INPUT_REPEAT_DELAY_MS = 280,
     UI_PAGE_REPEAT_DELAY_MS = 340,
     UI_INPUT_REPEAT_INTERVAL_MS = 85,
+    UI_FRAME_INTERVAL_ACTIVE_MS = 33,
+    UI_FRAME_INTERVAL_LOADING_MS = 100,
+    UI_FRAME_INTERVAL_READER_IDLE_MS = 180,
     UI_PROGRESS_REPORT_INTERVAL_MS = 30000,
     UI_PROGRESS_PAUSE_TIMEOUT_MS = 120000,
     UI_CHAPTER_PREFETCH_RADIUS = 5,
@@ -379,6 +384,38 @@ static int reader_reset_content_font(TTF_Font *fallback_font, ReaderViewState *s
     char_width_cache_reset();
 
     return 0;
+}
+
+static int reader_line_height_for_font_size(int font_size) {
+    switch (font_size) {
+        case 24: return 36;
+        case 28: return 40;
+        case 32: return 45;
+        case 36: return 50;
+        case 40: return 54;
+        case 44: return 59;
+        default:
+            if (font_size <= 0) {
+                font_size = UI_READER_CONTENT_FONT_SIZE;
+            }
+            return font_size + UI_READER_EXTRA_LEADING + 4;
+    }
+}
+
+static int reader_top_inset_for_font_size(int font_size) {
+    switch (font_size) {
+        case 24: return 12;
+        case 28: return 14;
+        case 32: return 16;
+        case 36: return 18;
+        case 40: return 20;
+        case 44: return 22;
+        default:
+            if (font_size <= 0) {
+                font_size = UI_READER_CONTENT_FONT_SIZE;
+            }
+            return font_size / 2;
+    }
 }
 
 static void reader_sync_catalog_selection(ReaderViewState *state);
@@ -471,6 +508,28 @@ static float ui_ease_out_cubic(float value) {
     float inv = 1.0f - t;
 
     return 1.0f - inv * inv * inv;
+}
+
+static float ui_ease_in_out_cubic(float value) {
+    float t = ui_clamp01f(value);
+
+    if (t < 0.5f) {
+        return 4.0f * t * t * t;
+    }
+    t = -2.0f * t + 2.0f;
+    return 1.0f - (t * t * t) / 2.0f;
+}
+
+static Uint8 ui_view_fade_alpha(float progress) {
+    float eased;
+
+    if (ui_dark_mode) {
+        eased = ui_ease_out_cubic(progress);
+        return (Uint8)(112.0f + eased * 143.0f);
+    }
+
+    eased = ui_ease_in_out_cubic(progress);
+    return (Uint8)(228.0f + eased * 27.0f);
 }
 
 static float ui_motion_step(float current, float target, float speed, float dt_seconds) {
@@ -625,6 +684,30 @@ static void ui_platform_haptic_pulse(UiHapticState *state, Uint32 duration_ms,
     }
 
     state->next_allowed_tick = now + cooldown_ms;
+}
+
+static Uint32 ui_frame_interval_ms(UiView view, const UiMotionState *motion_state,
+                                   Uint32 poor_network_toast_until, Uint32 now) {
+    int animated = 0;
+
+    if (motion_state) {
+        animated = motion_state->view_fade_active ||
+            motion_state->catalog_progress > 0.001f ||
+            motion_state->catalog_progress < 0.999f;
+    }
+    if (poor_network_toast_until > now) {
+        animated = 1;
+    }
+    if (view == VIEW_BOOTSTRAP || view == VIEW_OPENING) {
+        return UI_FRAME_INTERVAL_LOADING_MS;
+    }
+    if (view == VIEW_READER) {
+        if (animated) {
+            return UI_FRAME_INTERVAL_ACTIVE_MS;
+        }
+        return UI_FRAME_INTERVAL_READER_IDLE_MS;
+    }
+    return 0;
 }
 
 static int ui_platform_apply_brightness_level(int tg5040_input, int level) {
@@ -2014,10 +2097,11 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     int info_h = window_h - footer_line.y;
     int footer_text_y;
     int title_y;
+    int nav_y;
     (void)status;
     (void)start;
 
-    start_y = content_top + (content_h - (int)(cover_h * 1.22f)) / 2 + 16;
+    start_y = content_top + (content_h - cover_h) / 2;
     if (start_y < content_top) {
         start_y = content_top;
     }
@@ -2035,6 +2119,7 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
         strftime(time_buf, sizeof(time_buf), "%H:%M", local_tm);
     }
     title_y = (header_h - (title_font ? TTF_FontHeight(title_font) : 36)) / 2;
+    nav_y = content_top + (content_h - (title_font ? TTF_FontHeight(title_font) : 36)) / 2;
 
     if (count == 0) {
         int empty_w = 0;
@@ -2084,10 +2169,10 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     }
 
     if (selected > 0) {
-        draw_text(renderer, title_font, window_x + 18, content_top + (content_bottom - content_top) / 2 - 20, ink, "<");
+        draw_text(renderer, title_font, window_x + 18, nav_y, ink, "<");
     }
     if (selected + 1 < count) {
-        draw_text(renderer, title_font, window_x + window_w - 42, content_top + (content_bottom - content_top) / 2 - 20,
+        draw_text(renderer, title_font, window_x + window_w - 42, nav_y,
                   ink, ">");
     }
 
@@ -2274,93 +2359,6 @@ static const char *skip_line_start_spacing(const char *text, const char *end) {
     return p;
 }
 
-static const char *utf8_prev_char_start(const char *start, const char *p) {
-    if (!start || !p || p <= start) {
-        return start;
-    }
-    p--;
-    while (p > start && (((unsigned char)*p & 0xC0) == 0x80)) {
-        p--;
-    }
-    return p;
-}
-
-static int line_has_hanging_punct(const char *text, const char *line_end, const char **trimmed_end_out) {
-    const char *trimmed_end = line_end;
-    int trimmed_any = 0;
-
-    if (!text || !line_end || line_end <= text) {
-        if (trimmed_end_out) {
-            *trimmed_end_out = text;
-        }
-        return 0;
-    }
-
-    while (trimmed_end > text) {
-        const char *ch = utf8_prev_char_start(text, trimmed_end);
-        int ch_len = utf8_char_len((unsigned char)*ch);
-
-        if ((trimmed_end - ch) != ch_len) {
-            break;
-        }
-        if ((unsigned char)*ch < 0x80 && isspace((unsigned char)*ch)) {
-            trimmed_end = ch;
-            trimmed_any = 1;
-            continue;
-        }
-        if (strncmp(ch, "\xE3\x80\x80", 3) == 0) {
-            trimmed_end = ch;
-            trimmed_any = 1;
-            continue;
-        }
-        if (is_forbidden_line_start_punct(ch)) {
-            trimmed_end = ch;
-            trimmed_any = 1;
-            continue;
-        }
-        break;
-    }
-
-    if (trimmed_end_out) {
-        *trimmed_end_out = trimmed_end;
-    }
-    return trimmed_any;
-}
-
-static int measure_optical_line_width(TTF_Font *font, const char *text) {
-    int width = 0;
-    const char *trimmed_end;
-
-    if (!font || !text || !*text) {
-        return 0;
-    }
-
-    TTF_SizeUTF8(font, text, &width, NULL);
-    if (!line_has_hanging_punct(text, text + strlen(text), &trimmed_end)) {
-        return width;
-    }
-    if (trimmed_end <= text) {
-        return 0;
-    }
-
-    {
-        size_t trimmed_len = (size_t)(trimmed_end - text);
-        char *buf = malloc(trimmed_len + 1);
-        int trimmed_width = width;
-
-        if (!buf) {
-            return width;
-        }
-        memcpy(buf, text, trimmed_len);
-        buf[trimmed_len] = '\0';
-        if (TTF_SizeUTF8(font, buf, &trimmed_width, NULL) != 0) {
-            trimmed_width = width;
-        }
-        free(buf);
-        return trimmed_width;
-    }
-}
-
 static int append_line(ReaderViewState *state, const char *text, size_t len, int start_offset) {
     char **tmp;
     int *offsets_tmp;
@@ -2467,6 +2465,7 @@ static int shelf_cover_download_thread(void *userdata) {
 static int startup_thread(void *userdata) {
     StartupState *state = (StartupState *)userdata;
     ApiContext ctx;
+    int session_poor_network = 0;
 
     if (!state) {
         return -1;
@@ -2479,7 +2478,12 @@ static int startup_thread(void *userdata) {
     }
     snprintf(ctx.ca_file, sizeof(ctx.ca_file), "%s", state->ca_file);
     state->session_ok = auth_check_session(&ctx, &state->shelf_nuxt);
-    state->poor_network = ctx.poor_network;
+    session_poor_network = ctx.poor_network;
+    ctx.poor_network = 0;
+    if (state->session_ok == 1) {
+        (void)reader_warmup_font(&ctx);
+    }
+    state->poor_network = session_poor_network;
     api_cleanup(&ctx);
     state->running = 0;
     state->completed = 1;
@@ -2729,11 +2733,13 @@ static int wrap_paragraph(TTF_Font *font, const char *text, int max_width, Reade
 
         /* Handle explicit newlines */
         if (*p == '\n') {
-            if (append_line(state, line_start, (size_t)(p - line_start), line_start_offset) != 0) {
-                return -1;
-            }
-            if (append_blank_lines(state, UI_READER_PARAGRAPH_GAP_LINES) != 0) {
-                return -1;
+            if (p > line_start) {
+                if (append_line(state, line_start, (size_t)(p - line_start), line_start_offset) != 0) {
+                    return -1;
+                }
+                if (append_blank_lines(state, UI_READER_PARAGRAPH_GAP_LINES) != 0) {
+                    return -1;
+                }
             }
             p++;
             char_offset++;
@@ -2855,7 +2861,6 @@ static int wrap_paragraph(TTF_Font *font, const char *text, int max_width, Reade
 
 static int reader_view_init_from_document(TTF_Font *font, int content_width, int content_height,
                                           int honor_saved_position, ReaderViewState *state) {
-    int line_skip;
     TTF_Font *render_font = font;
 
     if (!state) {
@@ -2874,9 +2879,7 @@ static int reader_view_init_from_document(TTF_Font *font, int content_width, int
         return -1;
     }
 
-    line_skip = TTF_FontLineSkip(render_font);
-    state->line_height = line_skip > 0 ? line_skip + UI_READER_EXTRA_LEADING :
-                                          state->content_font_size + UI_READER_EXTRA_LEADING;
+    state->line_height = reader_line_height_for_font_size(state->content_font_size);
     state->lines_per_page = state->line_height > 0 ? content_height / state->line_height : 18;
     if (state->lines_per_page < 1) {
         state->lines_per_page = 1;
@@ -2931,7 +2934,6 @@ static int reader_view_load(ApiContext *ctx, TTF_Font *font, const char *target,
 static int reader_rewrap(TTF_Font *font, int content_width, int content_height,
                          ReaderViewState *state) {
     TTF_Font *render_font = state->content_font ? state->content_font : font;
-    int line_skip;
     int saved_offset = 0;
 
     if (!state || !state->doc.content_text) {
@@ -2959,9 +2961,7 @@ static int reader_rewrap(TTF_Font *font, int content_width, int content_height,
         return -1;
     }
 
-    line_skip = TTF_FontLineSkip(render_font);
-    state->line_height = line_skip > 0 ? line_skip + UI_READER_EXTRA_LEADING :
-                                          UI_READER_CONTENT_FONT_SIZE + UI_READER_EXTRA_LEADING;
+    state->line_height = reader_line_height_for_font_size(state->content_font_size);
     state->lines_per_page = state->line_height > 0 ? content_height / state->line_height : 18;
     if (state->lines_per_page < 1) {
         state->lines_per_page = 1;
@@ -3712,8 +3712,8 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
     int footer_text_y = footer_line.y + (info_h - (body_font ? TTF_FontHeight(body_font) : 28)) / 2;
     int title_y = (header_h - (title_font ? TTF_FontHeight(title_font) : 36)) / 2;
 
-    /* Content area: top-aligned with fixed top margin */
-    int content_top = header_h + 16;
+    /* Content area: top-aligned with a font-size-aware top inset */
+    int content_top = header_h + reader_top_inset_for_font_size(state->content_font_size);
     int content_bottom = canvas_h - footer_h - 4;
     int content_x = cx + margin;
     int y = content_top;
@@ -3739,39 +3739,21 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
         end_line = state->line_count;
     }
     {
-        int max_line_w = 0;
-        int content_area_w = cw - 2 * margin;
-        int content_area_h = content_bottom - content_top;
         int visible_lines = 0;
-        int block_offset_x = 0;
+        int content_area_h = content_bottom - content_top;
         int block_offset_y = 0;
-        int visible_text_h = 0;
 
         for (int i = start_line; i < end_line; i++) {
             if (content_top + visible_lines * line_h + line_h > content_bottom) {
                 break;
             }
-            {
-                int line_w = measure_optical_line_width(content_font, state->lines[i]);
-                if (line_w > max_line_w) {
-                    max_line_w = line_w;
-                }
-            }
             visible_lines++;
-        }
-
-        visible_text_h = visible_lines * line_h;
-        if (max_line_w > 0 &&
-            !(end_line >= state->line_count && visible_lines <= 1)) {
-            block_offset_x = (content_area_w - max_line_w) / 2;
-            if (block_offset_x < 0) {
-                block_offset_x = 0;
-            }
         }
 
         if (visible_lines > 0 &&
             visible_lines >= state->lines_per_page &&
             end_line < state->line_count) {
+            int visible_text_h = visible_lines * line_h;
             block_offset_y = (content_area_h - visible_text_h) / 2;
             if (block_offset_y < 0) {
                 block_offset_y = 0;
@@ -3780,7 +3762,7 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
 
         y = content_top + block_offset_y;
         for (int i = start_line; i < start_line + visible_lines; i++) {
-            draw_text(renderer, content_font, content_x + block_offset_x, y, ink, state->lines[i]);
+            draw_text(renderer, content_font, content_x, y, ink, state->lines[i]);
             y += line_h;
         }
     }
@@ -4504,6 +4486,12 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                             }
                             free(target);
                         }
+                    } else if ((ui_event_is_chapter_prev(&event, tg5040_input) ||
+                                ui_event_is_chapter_next(&event, tg5040_input)) &&
+                               reader_state.current_page > 0) {
+                        reader_state.current_page = 0;
+                        reader_save_local_position(ctx, &reader_state);
+                        ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 50);
                     } else if (ui_event_is_chapter_prev(&event, tg5040_input) &&
                                reader_state.doc.prev_target && reader_state.doc.prev_target[0]) {
                         char *target = strdup(reader_state.doc.prev_target);
@@ -4846,12 +4834,23 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                 if (progress >= 1.0f) {
                     motion_state.view_fade_active = 0;
                 } else {
-                    scene_alpha = (Uint8)(112.0f + ui_ease_out_cubic(progress) * 143.0f);
+                    scene_alpha = ui_view_fade_alpha(progress);
                 }
             }
             ui_present_scene(renderer, scene_texture, rotation, scene_alpha);
         }
         SDL_RenderPresent(renderer);
+
+        {
+            Uint32 sleep_budget = ui_frame_interval_ms(view, &motion_state,
+                                                       poor_network_toast_until,
+                                                       SDL_GetTicks());
+            Uint32 frame_elapsed = SDL_GetTicks() - frame_now;
+
+            if (frame_elapsed < sleep_budget) {
+                SDL_Delay(sleep_budget - frame_elapsed);
+            }
+        }
     }
 
     rc = 0;

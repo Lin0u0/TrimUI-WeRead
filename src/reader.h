@@ -52,6 +52,7 @@ typedef struct {
 
 int reader_load(ApiContext *ctx, const char *target, int font_size, ReaderDocument *doc);
 int reader_prefetch(ApiContext *ctx, const char *target, int font_size, ReaderDocument *doc);
+int reader_warmup_font(ApiContext *ctx);
 int reader_focus_catalog(ApiContext *ctx, ReaderDocument *doc);
 int reader_ensure_full_catalog(ApiContext *ctx, ReaderDocument *doc);
 int reader_expand_catalog(ApiContext *ctx, ReaderDocument *doc, int direction, int *added_count);

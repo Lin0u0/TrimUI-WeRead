@@ -1,4 +1,4 @@
-PLATFORM ?= native
+PLATFORM ?= tg5040
 
 APP_NAME := WeRead
 APP_VERSION := $(strip $(shell cat VERSION 2>/dev/null || printf '0.1.0'))
@@ -135,7 +135,8 @@ all: $(TARGET_PATH)
 
 help:
 	@printf '%s\n' 'Available targets:'
-	@printf '%s\n' '  make macos-release      Build the macOS test archive'
+	@printf '%s\n' '  make                    Build the tg5040 binary'
+	@printf '%s\n' '  make package            Build the default NextUI / MinUI package'
 	@printf '%s\n' '  make nextui-release     Build the NextUI / MinUI archive'
 	@printf '%s\n' '  make stock-release      Build the TrimUI stock OS app archive'
 	@printf '%s\n' '  make crossmix-release   Build the CrossMix-OS app archive'
@@ -147,14 +148,12 @@ help:
 	@printf '%s\n' '  make tg5040-bootstrap   Prepare both SDK and tg5040 libcurl'
 	@printf '%s\n' ''
 	@printf '%s\n' 'Build / debug targets:'
-	@printf '%s\n' '  make native             Build the native macOS binary'
 	@printf '%s\n' '  make tg5040             Build the tg5040 binary only'
 	@printf '%s\n' '  make print-config       Print resolved build configuration'
 	@printf '%s\n' ''
 	@printf '%s\n' 'Cleanup targets:'
 	@printf '%s\n' '  make clean              Remove all build artifacts'
-	@printf '%s\n' '  make clean-native       Remove native build artifacts'
-	@printf '%s\n' '  make clean-tg5040       Remove tg5040 build artifacts and SDK cache'
+	@printf '%s\n' '  make clean-tg5040       Remove tg5040 build artifacts, SDK cache, and cached libcurl'
 	@printf '%s\n' '  make clean-dist         Remove packaged archives'
 
 dirs:
@@ -302,7 +301,7 @@ clean-native:
 	rm -rf build/native
 
 clean-tg5040:
-	rm -rf build/tg5040 build/tg5040-sdk build/tg5040-deps
+	rm -rf build/tg5040 build/tg5040-sdk build/tg5040-deps "$(TG5040_CURL_PREFIX)"
 
 clean-dist:
 	rm -rf dist

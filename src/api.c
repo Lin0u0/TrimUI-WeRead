@@ -120,7 +120,6 @@ static int api_get_ua_internal(ApiContext *ctx, const char *url, const char *use
             long code;
             curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &code);
             if (code >= 200 && code < 400) {
-                if (attempt > 0) ctx->poor_network = 1;
                 return 0;
             }
             fprintf(stderr, "GET %s returned %ld\n", url, code);
@@ -129,12 +128,14 @@ static int api_get_ua_internal(ApiContext *ctx, const char *url, const char *use
         }
 
         if (attempt == 0 && is_transient_error(res)) {
-            ctx->poor_network = 1;
             api_buffer_free(buf);
             sleep(1);
             continue;
         }
 
+        if (is_transient_error(res) || res == CURLE_OPERATION_TIMEDOUT) {
+            ctx->poor_network = 1;
+        }
         if (res != CURLE_OPERATION_TIMEDOUT) {
             fprintf(stderr, "GET %s failed: %s\n", url, ctx->error_buf);
         }
@@ -174,7 +175,6 @@ static int api_post_internal(ApiContext *ctx, const char *url, const char *body,
             long code;
             curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &code);
             if (code >= 200 && code < 400) {
-                if (attempt > 0) ctx->poor_network = 1;
                 return 0;
             }
             fprintf(stderr, "POST %s returned %ld\n", url, code);
@@ -183,12 +183,14 @@ static int api_post_internal(ApiContext *ctx, const char *url, const char *body,
         }
 
         if (attempt == 0 && is_transient_error(res)) {
-            ctx->poor_network = 1;
             api_buffer_free(buf);
             sleep(1);
             continue;
         }
 
+        if (is_transient_error(res) || res == CURLE_OPERATION_TIMEDOUT) {
+            ctx->poor_network = 1;
+        }
         if (res != CURLE_OPERATION_TIMEDOUT) {
             fprintf(stderr, "POST %s failed: %s\n", url, ctx->error_buf);
         }
@@ -214,17 +216,18 @@ int api_download(ApiContext *ctx, const char *url, Buffer *buf) {
         CURLcode res = ctx->last_curl_code;
 
         if (res == CURLE_OK) {
-            if (attempt > 0) ctx->poor_network = 1;
             return 0;
         }
 
         if (attempt == 0 && is_transient_error(res)) {
-            ctx->poor_network = 1;
             api_buffer_free(buf);
             sleep(1);
             continue;
         }
 
+        if (is_transient_error(res) || res == CURLE_OPERATION_TIMEDOUT) {
+            ctx->poor_network = 1;
+        }
         fprintf(stderr, "Download %s failed: %s\n", url, ctx->error_buf);
         api_buffer_free(buf);
         return -1;
