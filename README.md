@@ -1,116 +1,126 @@
 # TrimUI-WeRead
 
-A native [WeChat Read (WeRead)](https://weread.qq.com) client for TrimUI handheld devices and macOS.
+A native [WeRead](https://weread.qq.com) client for TrimUI handhelds.
 
-Read your WeRead library on the TrimUI Brick with a lightweight SDL2 interface -- QR code login, bookshelf browsing, paginated reader, and cloud progress sync.
+It brings the core WeRead flow to button-driven devices: QR code login, bookshelf browsing, paginated reading, chapter navigation, local resume state, and cloud progress sync.
 
-## Overview
+## What It Does
 
-TrimUI-WeRead is a lightweight native reader for people who want to carry their WeRead library onto dedicated handheld hardware instead of staying inside a phone app or browser tab.
+TrimUI-WeRead is aimed at the TrimUI Brick (`tg5040`) family first.
 
-The project is built around a simple but complete reading loop:
+Current capabilities:
 
-- Sign in with a WeRead QR code
-- Keep the session on device
-- Browse your bookshelf with cover art
-- Open a book in a paginated reader designed for buttons instead of touch gestures
-- Jump between chapters, change font size, and continue where you left off
-- Sync progress back to WeRead so the same title stays aligned across devices
-
-The main target is the TrimUI Brick running NextUI, MinUI-style setups, Stock OS, or CrossMix-OS. A macOS build is also included so the app can be developed and tested on desktop.
-
-## Features
-
-- QR code login with persistent sessions
-- Bookshelf with cover art
-- Paginated reader with chapter navigation and font size control
-- Reading progress synced to WeRead cloud
-- Runs on TrimUI Brick (NextUI, Stock OS, CrossMix-OS) and macOS
+- WeRead QR code login with persistent local session
+- Bookshelf browsing with cached cover art
+- Paginated reader tuned for hardware buttons
+- Chapter catalog and quick resume
+- Reader font size adjustment, dark mode, and screen rotation
+- Reading progress sync back to WeRead cloud
+- Packaged builds for NextUI / MinUI-style setups, Stock OS, and CrossMix-OS
 
 ## Supported Platforms
 
 | Platform | Device | Notes |
 |----------|--------|-------|
-| **NextUI / MinUI** | TrimUI Brick (TG5040) | Primary target |
-| **Stock OS** | TrimUI Brick (TG5040) | Official firmware |
-| **CrossMix-OS** | TrimUI Brick (TG5040) | Community firmware |
-| **macOS** | Desktop | Development and testing |
-
-## First Release
-
-Version `0.1.0` is the first public release of TrimUI-WeRead.
-
-This release is meant to be a real, installable reading package rather than a technology preview. The focus of the first version is reliability, straightforward installation, and a reading experience that already feels useful on actual handheld hardware.
-
-What this release brings together:
-
-- End-to-end login flow with persistent sessions
-- Native bookshelf browsing on device
-- Paginated reading with hardware-friendly navigation
-- Chapter switching and font size control
-- Cloud progress synchronization back to WeRead
-- Installable packages for all currently supported platforms
-- A dedicated NextUI `.pakz` package for automatic import
-
+| NextUI / MinUI-style launchers | TrimUI Brick (`tg5040`) | Primary target |
+| Stock OS | TrimUI Brick (`tg5040`) | Official firmware layout |
+| CrossMix-OS | TrimUI Brick (`tg5040`) | Community firmware layout |
 ## Installation
 
-Download the latest release for your platform from the [Releases](https://github.com/Lin0u0/TrimUI-WeRead/releases) page.
+Download the latest release from [Releases](https://github.com/Lin0u0/TrimUI-WeRead/releases).
 
 ### NextUI / MinUI
 
-For NextUI, the recommended install is `WeRead.pakz`: copy it to the root of your SD card, reinsert the card, and let NextUI install it automatically.
+Recommended:
 
-For manual extraction, `WeRead-nextui.tar.gz` also works: extract it to the root of your SD card so `Tools/tg5040/WeRead.pak` appears under `Tools/`.
+- Copy `WeRead.pakz` to the root of the SD card
+- Reinsert the SD card and let NextUI import it automatically
+
+Manual install:
+
+- Extract `WeRead-nextui.tar.gz` to the SD card root
+- Confirm the app ends up at `Tools/tg5040/WeRead.pak`
 
 ### Stock OS
 
-Extract `WeRead-stock-app.tar.gz` to the root of your SD card. The app appears under `Apps/WeRead/`.
+- Extract `WeRead-stock-app.tar.gz` to the SD card root
+- The app will be available under `Apps/WeRead/`
 
 ### CrossMix-OS
 
-Extract `WeRead-crossmix.tar.gz` to the root of your SD card. The app appears under `Apps/WeRead/`.
+- Extract `WeRead-crossmix.tar.gz` to the SD card root
+- The app will be available under `Apps/WeRead/`
 
-### macOS
+## First Run
 
-Extract `WeRead-macos.tar.gz` and run `./run.sh` from inside the extracted folder.
+On first launch, open the login flow and scan the generated QR code with WeRead on your phone. After login succeeds, the app keeps its cookies and reader state locally so later launches can go straight back to the shelf or the last book.
 
-## Notes
+Runtime data is stored per platform:
 
-- The project is currently centered on the TrimUI Brick (`tg5040`) family of environments.
-- This release focuses on the core reading path first: login, bookshelf, reader, and progress sync.
-- Release assets are split by platform so each system can use the package that matches its folder layout and launcher conventions.
+- NextUI: `$SHARED_USERDATA_PATH/WeRead`
+- Stock OS / CrossMix-OS: `SDCARD/Data/WeRead`
+
+This data includes:
+
+- `cookies.txt`
+- `state/shelf.json`
+- `state/last-reader.json`
+- `state/reader-positions.json`
+- `state/preferences.json`
+- launch logs on TrimUI builds
 
 ## Controls
 
-- `A` opens the selected book and turns pages forward in the reader
-- `B` goes back
-- `X` resumes the last book from the shelf and opens the catalog in the reader
-- `Y` or `+/-` changes reader font size
-- `Tab` rotates the UI
-- `T` toggles dark mode
-- On TrimUI Brick (`tg5040`), `Menu`, `Select`, and `Start` are left to the system so NextUI / firmware hotkeys can handle them
-- On TrimUI Brick (`tg5040`), `L3` toggles dark mode and `R3` rotates the UI inside the app
-- Press the device lock or power button in-app to suspend the device
+### TrimUI
+
+- `D-pad`: move selection, turn pages, navigate catalog
+- `A`: confirm, open book, next page
+- `B`: back, close overlays, previous page in some contexts
+- `X`: resume the last opened book from the shelf
+- `Y`: cycle reader font size
+- `L1/R1`: page up and page down in catalog / reader
+- `L3`: toggle dark mode
+- `R3`: rotate the UI
+- `Power/Lock`: suspend the device from inside the app
+
+`Menu`, `Select`, and `Start` are intentionally left to the system so firmware hotkeys keep working.
+
+## Command-Line Usage
+
+The binary also supports non-UI commands:
+
+```sh
+weread [--data DIR] [--font FILE] [--platform NAME] [--cafile FILE] [command]
+```
+
+Available commands:
+
+- `login [qr.png]`
+- `shelf`
+- `shelf-cache`
+- `reader <reader-url-or-bc> [font-size]`
+- `resume`
+- `ui`
+
+Notes:
+
+- With no explicit command, the program starts `ui` when a font is available.
+- Without SDL UI support, the default falls back to `shelf`.
+- `shelf-cache` prints the cached shelf when network access is unavailable.
 
 ## Building from Source
 
-### macOS (native)
+### Required assets
 
-Install dependencies via Homebrew:
+The repo expects these runtime assets:
 
-```sh
-brew install sdl2 sdl2_ttf sdl2_image curl
-```
+- `assets/icons/weread.png`
+- `assets/icons/weread-icontop.png`
+- `assets/cacert.pem`
 
-Build and package:
+### TrimUI cross-build
 
-```sh
-make macos-release
-```
-
-### TrimUI (cross-compilation)
-
-Install a compatible AArch64 Linux cross-compiler, then bootstrap the SDK and dependencies:
+Install an AArch64 Linux cross compiler first. Then bootstrap the TrimUI SDK userland and static `libcurl`:
 
 ```sh
 make tg5040-bootstrap
@@ -119,17 +129,46 @@ make tg5040-bootstrap
 Build packages:
 
 ```sh
-make nextui-release    # NextUI / MinUI
-make stock-release     # Stock OS
-make crossmix-release  # CrossMix-OS
-make package-all       # All platforms
+make nextui-release
+make stock-release
+make crossmix-release
+make package-all
 ```
 
-See [BUILD.md](BUILD.md) for details.
+Useful helper targets:
+
+```sh
+make tg5040
+make print-config
+make clean
+make clean-tg5040
+make clean-dist
+```
+
+Outputs:
+
+- `dist/WeRead-nextui.tar.gz`
+- `dist/WeRead.pakz`
+- `dist/WeRead-stock-app.tar.gz`
+- `dist/WeRead-crossmix.tar.gz`
+
+More build details are in [BUILD.md](BUILD.md).
+
+## Known Scope
+
+This project currently focuses on the core reading path:
+
+- login
+- bookshelf
+- reader
+- resume state
+- progress sync
+
+It is intentionally centered on TrimUI Brick packaging and launcher conventions rather than being a generic Linux WeRead client.
 
 ## Release Notes
 
-Detailed `0.1.0` release notes are available in [CHANGELOG.md](CHANGELOG.md).
+Detailed release notes are available in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

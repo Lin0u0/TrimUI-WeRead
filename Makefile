@@ -14,15 +14,9 @@ SRC_DIRS := src vendor
 SRCS := $(foreach dir,$(SRC_DIRS),$(wildcard $(dir)/*.c))
 OBJS := $(patsubst %.c,$(OBJ_DIR)/%.o,$(SRCS))
 
-ASSET_FONT := assets/fonts/SourceHanSerifSC-Regular.otf
 ASSET_ICON := assets/icons/weread.png
 ASSET_ICONTOP := assets/icons/weread-icontop.png
 ASSET_CACERT := assets/cacert.pem
-
-PKG_CONFIG ?= pkg-config
-CURL_CONFIG ?= curl-config
-BREW_PREFIX ?= /opt/homebrew
-SDL2_CONFIG ?= $(BREW_PREFIX)/opt/sdl2/bin/sdl2-config
 
 TG5040_DEPS_PREFIX ?= $(abspath third_party/tg5040)
 TG5040_CURL_PREFIX ?= $(TG5040_DEPS_PREFIX)/curl
@@ -59,31 +53,7 @@ TG5040_RUNTIME_LIBS := \
 	libz.so \
 	libz.so.1
 
-ifeq ($(PLATFORM),native)
-  CC := cc
-  ifeq ($(shell command -v $(PKG_CONFIG) >/dev/null 2>&1; echo $$?),0)
-    SDL_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags sdl2 SDL2_ttf SDL2_image 2>/dev/null)
-    SDL_LIBS ?= $(shell $(PKG_CONFIG) --libs sdl2 SDL2_ttf SDL2_image 2>/dev/null)
-  else ifeq ($(shell test -x $(BREW_PREFIX)/bin/pkg-config && echo yes),yes)
-    SDL_CFLAGS ?= $(shell $(BREW_PREFIX)/bin/pkg-config --cflags sdl2 SDL2_ttf SDL2_image 2>/dev/null)
-    SDL_LIBS ?= $(shell $(BREW_PREFIX)/bin/pkg-config --libs sdl2 SDL2_ttf SDL2_image 2>/dev/null)
-  else ifeq ($(shell test -x $(SDL2_CONFIG) && test -d $(BREW_PREFIX)/opt/sdl2_ttf && test -d $(BREW_PREFIX)/opt/sdl2_image && echo yes),yes)
-    SDL_CFLAGS ?= $(shell $(SDL2_CONFIG) --cflags) -I$(BREW_PREFIX)/opt/sdl2_ttf/include -I$(BREW_PREFIX)/opt/sdl2_image/include
-    SDL_LIBS ?= $(shell $(SDL2_CONFIG) --libs) -L$(BREW_PREFIX)/opt/sdl2_ttf/lib -L$(BREW_PREFIX)/opt/sdl2_image/lib -lSDL2_ttf -lSDL2_image
-  else
-    SDL_CFLAGS ?=
-    SDL_LIBS ?=
-  endif
-
-  ifeq ($(shell command -v $(CURL_CONFIG) >/dev/null 2>&1; echo $$?),0)
-    CURL_CFLAGS ?= $(shell $(CURL_CONFIG) --cflags)
-    CURL_LIBS ?= $(shell $(CURL_CONFIG) --libs)
-  else
-    CURL_CFLAGS ?=
-    CURL_LIBS ?= -lcurl
-  endif
-  PACKAGE_NAME := $(APP_NAME)-macos.tar.gz
-else ifeq ($(PLATFORM),tg5040)
+ifeq ($(PLATFORM),tg5040)
   CROSS ?= aarch64-linux-gnu-
   CC := $(TG5040_CC)
   TG5040_RESOLVED_SYSROOT := $(strip $(shell $(CC) -print-sysroot 2>/dev/null))
@@ -112,7 +82,6 @@ else ifeq ($(PLATFORM),tg5040)
     $(TG5040_SDK_USR)/lib/libcrypto.so.1.1 \
     $(TG5040_SDK_USR)/lib/libz.so \
     -ldl -lpthread
-  PACKAGE_NAME := $(APP_NAME)-trimui.tar.gz
 else
   $(error Unsupported PLATFORM '$(PLATFORM)')
 endif
@@ -123,13 +92,13 @@ else
   COMMON_CFLAGS += -DHAVE_SDL=0
 endif
 
-CFLAGS := $(if $(filter tg5040,$(PLATFORM)),-mcpu=cortex-a53 -O2,-O0 -g) $(COMMON_CFLAGS) $(SDL_CFLAGS) $(CURL_CFLAGS)
-LDFLAGS := $(SDL_LIBS) $(CURL_LIBS) $(COMMON_LDFLAGS) $(if $(filter tg5040,$(PLATFORM)),-lpthread,)
+CFLAGS := -mcpu=cortex-a53 -O2 $(COMMON_CFLAGS) $(SDL_CFLAGS) $(CURL_CFLAGS)
+LDFLAGS := $(SDL_LIBS) $(CURL_LIBS) $(COMMON_LDFLAGS) -lpthread
 
-.PHONY: all help clean clean-native clean-tg5040 clean-dist \
-	dirs native tg5040 tg5040-sdk tg5040-libcurl tg5040-bootstrap \
-	package package-native package-tg5040 package-nextui package-stock package-crossmix package-all \
-	macos-release nextui-release stock-release crossmix-release print-config
+.PHONY: all help clean clean-tg5040 clean-dist \
+	dirs tg5040 tg5040-sdk tg5040-libcurl tg5040-bootstrap \
+	package package-tg5040 package-nextui package-stock package-crossmix package-all \
+	nextui-release stock-release crossmix-release print-config
 
 all: $(TARGET_PATH)
 
@@ -166,9 +135,6 @@ $(OBJ_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-native:
-	$(MAKE) PLATFORM=native all
-
 tg5040:
 	$(MAKE) PLATFORM=tg5040 all
 
@@ -184,16 +150,6 @@ package: package-$(PLATFORM)
 
 package-tg5040:
 	$(MAKE) PLATFORM=tg5040 package-nextui
-
-package-native: $(TARGET_PATH)
-	@test -f "$(ASSET_FONT)" || { echo "missing font asset: $(ASSET_FONT)" >&2; exit 1; }
-	@rm -rf "$(STAGE_ROOT)/$(APP_NAME)-macos"
-	@mkdir -p "$(STAGE_ROOT)/$(APP_NAME)-macos/bin" "$(STAGE_ROOT)/$(APP_NAME)-macos/assets/fonts"
-	cp "$(TARGET_PATH)" "$(STAGE_ROOT)/$(APP_NAME)-macos/bin/$(TARGET)"
-	cp "$(ASSET_FONT)" "$(STAGE_ROOT)/$(APP_NAME)-macos/assets/fonts/"
-	cp packaging/macos/run.sh "$(STAGE_ROOT)/$(APP_NAME)-macos/run.sh"
-	chmod +x "$(STAGE_ROOT)/$(APP_NAME)-macos/run.sh"
-	tar -C "$(STAGE_ROOT)" -czf "$(DIST_DIR)/$(APP_NAME)-macos.tar.gz" "$(APP_NAME)-macos"
 
 package-nextui: tg5040-bootstrap
 	@rm -rf build/tg5040
@@ -265,9 +221,6 @@ package-crossmix: tg5040-bootstrap
 	cp -aL "$(TG5040_LIBGCC_S_PATH)" "$(STAGE_ROOT)/crossmix/Apps/WeRead/lib/tg5040/libgcc_s.so.1"
 	tar -C "$(STAGE_ROOT)/crossmix" -czf "$(DIST_DIR)/$(APP_NAME)-crossmix.tar.gz" Apps
 
-macos-release:
-	$(MAKE) PLATFORM=native package-native
-
 nextui-release:
 	$(MAKE) PLATFORM=tg5040 package-nextui
 
@@ -296,9 +249,6 @@ print-config:
 
 clean:
 	rm -rf build
-
-clean-native:
-	rm -rf build/native
 
 clean-tg5040:
 	rm -rf build/tg5040 build/tg5040-sdk build/tg5040-deps "$(TG5040_CURL_PREFIX)"
