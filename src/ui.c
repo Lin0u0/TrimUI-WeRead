@@ -124,6 +124,7 @@ typedef struct {
     int font_size;
     int content_font_size;
     int initial_page;
+    int initial_offset;
     int honor_saved_position;
     int running;
     int ready;
@@ -205,6 +206,7 @@ static int reader_view_load(ApiContext *ctx, TTF_Font *font, const char *target,
                             ReaderViewState *state);
 static void reader_set_source_target(ReaderViewState *state, const char *source_target);
 static void reader_save_local_position(ApiContext *ctx, ReaderViewState *state);
+static int reader_anchor_offset(const ReaderViewState *state);
 static void reader_progress_note_activity(ReaderViewState *state, Uint32 now);
 static void reader_progress_flush_blocking(ApiContext *ctx, ReaderViewState *state,
                                            int compute_progress);
@@ -1987,6 +1989,93 @@ static const char *skip_line_start_spacing(const char *text, const char *end) {
     return p;
 }
 
+static const char *utf8_prev_char_start(const char *start, const char *p) {
+    if (!start || !p || p <= start) {
+        return start;
+    }
+    p--;
+    while (p > start && (((unsigned char)*p & 0xC0) == 0x80)) {
+        p--;
+    }
+    return p;
+}
+
+static int line_has_hanging_punct(const char *text, const char *line_end, const char **trimmed_end_out) {
+    const char *trimmed_end = line_end;
+    int trimmed_any = 0;
+
+    if (!text || !line_end || line_end <= text) {
+        if (trimmed_end_out) {
+            *trimmed_end_out = text;
+        }
+        return 0;
+    }
+
+    while (trimmed_end > text) {
+        const char *ch = utf8_prev_char_start(text, trimmed_end);
+        int ch_len = utf8_char_len((unsigned char)*ch);
+
+        if ((trimmed_end - ch) != ch_len) {
+            break;
+        }
+        if ((unsigned char)*ch < 0x80 && isspace((unsigned char)*ch)) {
+            trimmed_end = ch;
+            trimmed_any = 1;
+            continue;
+        }
+        if (strncmp(ch, "\xE3\x80\x80", 3) == 0) {
+            trimmed_end = ch;
+            trimmed_any = 1;
+            continue;
+        }
+        if (is_forbidden_line_start_punct(ch)) {
+            trimmed_end = ch;
+            trimmed_any = 1;
+            continue;
+        }
+        break;
+    }
+
+    if (trimmed_end_out) {
+        *trimmed_end_out = trimmed_end;
+    }
+    return trimmed_any;
+}
+
+static int measure_optical_line_width(TTF_Font *font, const char *text) {
+    int width = 0;
+    const char *trimmed_end;
+
+    if (!font || !text || !*text) {
+        return 0;
+    }
+
+    TTF_SizeUTF8(font, text, &width, NULL);
+    if (!line_has_hanging_punct(text, text + strlen(text), &trimmed_end)) {
+        return width;
+    }
+    if (trimmed_end <= text) {
+        return 0;
+    }
+
+    {
+        size_t trimmed_len = (size_t)(trimmed_end - text);
+        char *buf = malloc(trimmed_len + 1);
+        int trimmed_width = width;
+
+        if (!buf) {
+            return width;
+        }
+        memcpy(buf, text, trimmed_len);
+        buf[trimmed_len] = '\0';
+        if (TTF_SizeUTF8(font, buf, &trimmed_width, NULL) != 0) {
+            trimmed_width = width;
+        }
+        free(buf);
+        return trimmed_width;
+    }
+}
+
 static int append_line(ReaderViewState *state, const char *text, size_t len, int start_offset) {
     char **tmp;
     int *offsets_tmp;
@@ -2118,12 +2207,14 @@ static int reader_prepare_open_document(ApiContext *ctx, const char *source_targ
                                         char *resolved_source_target, size_t resolved_source_size,
                                         int *content_font_size_out,
                                         int *initial_page_out,
+                                        int *initial_offset_out,
                                         int *honor_saved_position_out) {
     ReaderDocument doc = {0};
     ReaderDocument saved_doc = {0};
     char saved_target[2048];
     char saved_source_target[2048];
     int saved_page = 0;
+    int saved_offset = 0;
     int saved_content_font_size = UI_READER_CONTENT_FONT_SIZE;
     int has_local_position = 0;
     int has_cloud_position = 0;
@@ -2144,7 +2235,8 @@ static int reader_prepare_open_document(ApiContext *ctx, const char *source_targ
     if (book_id_hint && *book_id_hint &&
         state_load_reader_position(ctx, book_id_hint, source_target,
                                    saved_target, sizeof(saved_target),
-                                   NULL, &saved_content_font_size, &saved_page) == 0) {
+                                   NULL, &saved_content_font_size,
+                                   &saved_page, &saved_offset) == 0) {
         has_local_position = 1;
         if (resolved_source_target && resolved_source_size > 0) {
             ui_copy_string(resolved_source_target, resolved_source_size, source_target);
@@ -2187,7 +2279,8 @@ static int reader_prepare_open_document(ApiContext *ctx, const char *source_targ
         state_load_reader_position_by_book_id(ctx, doc.book_id,
                                               saved_source_target, sizeof(saved_source_target),
                                               saved_target, sizeof(saved_target),
-                                              NULL, &saved_content_font_size, &saved_page) == 0) {
+                                              NULL, &saved_content_font_size,
+                                              &saved_page, &saved_offset) == 0) {
         has_local_position = 1;
         if (resolved_source_target && resolved_source_size > 0) {
             ui_copy_string(resolved_source_target, resolved_source_size, saved_source_target);
@@ -2244,6 +2337,9 @@ static int reader_prepare_open_document(ApiContext *ctx, const char *source_targ
     if (initial_page_out) {
         *initial_page_out = initial_page;
     }
+    if (initial_offset_out) {
+        *initial_offset_out = saved_offset;
+    }
     if (honor_saved_position_out) {
         *honor_saved_position_out = honor_saved_position;
     }
@@ -2277,6 +2373,7 @@ static int reader_open_thread(void *userdata) {
                                      state->source_target, sizeof(state->source_target),
                                      &state->content_font_size,
                                      &state->initial_page,
+                                     &state->initial_offset,
                                      &state->honor_saved_position) == 0) {
         state->ready = 1;
     } else {
@@ -2556,11 +2653,9 @@ static int reader_rewrap(TTF_Font *font, int content_width, int content_height,
         return -1;
     }
 
-    /* Save current reading position as character offset */
-    if (state->lines_per_page > 0 && state->line_offsets &&
-        state->current_page * state->lines_per_page < state->line_count) {
-        saved_offset = state->line_offsets[state->current_page * state->lines_per_page];
-    }
+    /* Anchor around the visible portion of the current page so font-size
+     * changes keep us near what we were actually reading. */
+    saved_offset = reader_anchor_offset(state);
 
     /* Free old lines but keep doc */
     if (state->lines) {
@@ -2587,7 +2682,6 @@ static int reader_rewrap(TTF_Font *font, int content_width, int content_height,
         state->lines_per_page = 1;
     }
 
-    /* Restore reading position */
     state->current_page = reader_find_page_for_offset(state, saved_offset);
     return 0;
 }
@@ -2615,10 +2709,21 @@ static int reader_find_page_for_offset(const ReaderViewState *state, int target_
     if (state->line_offsets && state->line_count > 0) {
         for (int page = 0; page < total_pages; page++) {
             int start_line = page * state->lines_per_page;
+            int next_start_line = (page + 1) * state->lines_per_page;
+            int page_start_offset;
+            int next_page_offset;
             if (start_line >= state->line_count) {
                 return total_pages - 1;
             }
-            if (state->line_offsets[start_line] >= target_offset) {
+            page_start_offset = state->line_offsets[start_line];
+            if (target_offset <= page_start_offset) {
+                return page;
+            }
+            if (next_start_line >= state->line_count) {
+                return page;
+            }
+            next_page_offset = state->line_offsets[next_start_line];
+            if (target_offset < next_page_offset) {
                 return page;
             }
         }
@@ -2648,6 +2753,40 @@ static int reader_current_page_offset(const ReaderViewState *state) {
     return reader_estimate_chapter_offset(&state->doc,
                                           state->current_page,
                                           reader_total_pages((ReaderViewState *)state));
+}
+
+static int reader_anchor_offset(const ReaderViewState *state) {
+    int start_line;
+    int end_line;
+    int visible_lines;
+    int anchor_line;
+
+    if (!state || !state->line_offsets || state->line_count <= 0 || state->lines_per_page <= 0) {
+        return 0;
+    }
+
+    start_line = state->current_page * state->lines_per_page;
+    if (start_line < 0) {
+        start_line = 0;
+    }
+    if (start_line >= state->line_count) {
+        return state->line_offsets[state->line_count - 1];
+    }
+
+    end_line = start_line + state->lines_per_page;
+    if (end_line > state->line_count) {
+        end_line = state->line_count;
+    }
+    visible_lines = end_line - start_line;
+    if (visible_lines <= 0) {
+        return state->line_offsets[start_line];
+    }
+
+    anchor_line = start_line + visible_lines / 2;
+    if (anchor_line >= end_line) {
+        anchor_line = end_line - 1;
+    }
+    return state->line_offsets[anchor_line];
 }
 
 static void reader_set_source_target(ReaderViewState *state, const char *source_target) {
@@ -3062,13 +3201,16 @@ static void reader_build_page_summary(ReaderViewState *state, char *out, size_t 
 }
 
 static void reader_save_local_position(ApiContext *ctx, ReaderViewState *state) {
+    int current_offset;
+
     if (!ctx || !state || !state->doc.book_id || !state->doc.target || !state->source_target[0]) {
         return;
     }
     reader_clamp_current_page(state);
+    current_offset = reader_anchor_offset(state);
     state_save_reader_position(ctx, state->doc.book_id, state->source_target, state->doc.target,
                                state->doc.font_size, state->content_font_size,
-                               state->current_page);
+                               state->current_page, current_offset);
     state_save_last_reader(ctx, state->source_target, state->doc.font_size, state->content_font_size);
 }
 
@@ -3312,35 +3454,44 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
         end_line = state->line_count;
     }
     {
-        /* Find max line width and count visible lines;
-         * center vertically only when the page is full */
         int max_line_w = 0;
         int content_area_w = cw - 2 * margin;
         int content_area_h = content_bottom - content_top;
-        int block_offset_x, block_offset_y;
         int visible_lines = 0;
-        int total_text_h;
+        int block_offset_x = 0;
+        int block_offset_y = 0;
+        int visible_text_h = 0;
 
         for (int i = start_line; i < end_line; i++) {
-            int line_w = 0, line_h_unused = 0;
             if (content_top + visible_lines * line_h + line_h > content_bottom) {
                 break;
             }
-            TTF_SizeUTF8(content_font, state->lines[i], &line_w, &line_h_unused);
-            if (line_w > max_line_w) {
-                max_line_w = line_w;
+            {
+                int line_w = measure_optical_line_width(content_font, state->lines[i]);
+                if (line_w > max_line_w) {
+                    max_line_w = line_w;
+                }
             }
             visible_lines++;
         }
 
-        block_offset_x = (content_area_w - max_line_w) / 2;
-        if (block_offset_x < 0) block_offset_x = 0;
+        visible_text_h = visible_lines * line_h;
+        if (max_line_w > 0 &&
+            !(end_line >= state->line_count && visible_lines <= 1)) {
+            block_offset_x = (content_area_w - max_line_w) / 2;
+            if (block_offset_x < 0) {
+                block_offset_x = 0;
+            }
+        }
 
-        /* Use full-page text height for offset so every page shares
-         * the same top margin; partial pages simply don't center. */
-        total_text_h = state->lines_per_page * line_h;
-        block_offset_y = (content_area_h - total_text_h) / 2;
-        if (block_offset_y < 0) block_offset_y = 0;
+        if (visible_lines > 0 &&
+            visible_lines >= state->lines_per_page &&
+            end_line < state->line_count) {
+            block_offset_y = (content_area_h - visible_text_h) / 2;
+            if (block_offset_y < 0) {
+                block_offset_y = 0;
+            }
+        }
 
         y = content_top + block_offset_y;
         for (int i = start_line; i < start_line + visible_lines; i++) {
@@ -4061,6 +4212,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         }
                         reader_rewrap(body_font, current_layout.reader_content_w,
                                       current_layout.reader_content_h, &reader_state);
+                        reader_save_local_position(ctx, &reader_state);
                     } else if (ui_event_is_keydown(&event, SDLK_b)) {
                         reader_save_local_position(ctx, &reader_state);
                         view = VIEW_SHELF;
@@ -4155,7 +4307,12 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                            reader_open.honor_saved_position,
                                            &reader_state) == 0) {
                 if (!reader_open.honor_saved_position) {
-                    reader_state.current_page = reader_open.initial_page;
+                    if (reader_open.initial_offset > 0) {
+                        reader_state.current_page =
+                            reader_find_page_for_offset(&reader_state, reader_open.initial_offset);
+                    } else {
+                        reader_state.current_page = reader_open.initial_page;
+                    }
                     reader_clamp_current_page(&reader_state);
                 }
                 reader_set_source_target(&reader_state, reader_open.source_target);

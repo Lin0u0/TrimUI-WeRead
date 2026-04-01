@@ -143,7 +143,7 @@ int state_load_last_reader(ApiContext *ctx, char *target, size_t target_size, in
 
 int state_save_reader_position(ApiContext *ctx, const char *book_id, const char *source_target,
                                const char *target, int font_size, int content_font_size,
-                               int current_page) {
+                               int current_page, int current_offset) {
     cJSON *positions;
     cJSON *entry;
     int rc;
@@ -171,6 +171,7 @@ int state_save_reader_position(ApiContext *ctx, const char *book_id, const char 
     cJSON_AddNumberToObject(entry, "fontSize", font_size);
     cJSON_AddNumberToObject(entry, "contentFontSize", content_font_size);
     cJSON_AddNumberToObject(entry, "currentPage", current_page);
+    cJSON_AddNumberToObject(entry, "currentOffset", current_offset);
 
     if (cJSON_GetObjectItemCaseSensitive(positions, book_id)) {
         cJSON_ReplaceItemInObjectCaseSensitive(positions, book_id, entry);
@@ -184,7 +185,7 @@ int state_save_reader_position(ApiContext *ctx, const char *book_id, const char 
 
 int state_load_reader_position(ApiContext *ctx, const char *book_id, const char *source_target,
                                char *target, size_t target_size, int *font_size,
-                               int *content_font_size, int *current_page) {
+                               int *content_font_size, int *current_page, int *current_offset) {
     cJSON *positions;
     cJSON *entry;
     const char *saved_source_target;
@@ -228,6 +229,9 @@ int state_load_reader_position(ApiContext *ctx, const char *book_id, const char 
     if (current_page) {
         *current_page = json_get_int(entry, "currentPage", 0);
     }
+    if (current_offset) {
+        *current_offset = json_get_int(entry, "currentOffset", 0);
+    }
     cJSON_Delete(positions);
     return 0;
 }
@@ -236,7 +240,7 @@ int state_load_reader_position_by_book_id(ApiContext *ctx, const char *book_id,
                                           char *source_target, size_t source_target_size,
                                           char *target, size_t target_size,
                                           int *font_size, int *content_font_size,
-                                          int *current_page) {
+                                          int *current_page, int *current_offset) {
     cJSON *positions;
     cJSON *entry;
     const char *saved_source_target;
@@ -277,6 +281,9 @@ int state_load_reader_position_by_book_id(ApiContext *ctx, const char *book_id,
     }
     if (current_page) {
         *current_page = json_get_int(entry, "currentPage", 0);
+    }
+    if (current_offset) {
+        *current_offset = json_get_int(entry, "currentOffset", 0);
     }
     cJSON_Delete(positions);
     return 0;
