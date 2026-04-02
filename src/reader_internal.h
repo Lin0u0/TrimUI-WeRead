@@ -36,15 +36,21 @@ char *reader_extract_container_from_slice(const char *block_start, const char *b
 char *reader_extract_resolved_value_after_marker(const char *html, const char *block_start,
                                                  const char *block_end, const char *marker);
 
-/* ====================== Catalog Functions ====================== */
+/* ====================== Catalog Functions (catalog.c) ====================== */
 
 /* Free catalog items array */
 void reader_catalog_items_free(ReaderCatalogItem *items, int count);
 
-/* Parse catalog from a page block */
-int reader_parse_catalog_from_page_block(const char *html, const char *block_start,
-                                         const char *block_end, ReaderCatalogItem **out_items,
-                                         int *out_count);
+/* Parse catalog from reader block in HTML */
+int reader_parse_catalog(const char *html, const char *reader_block_start,
+                         const char *reader_block_end, ReaderCatalogItem **items_out,
+                         int *count_out);
+
+/* Hydrate full catalog from API */
+int reader_hydrate_full_catalog(ApiContext *ctx, ReaderDocument *doc);
+
+/* Focus catalog window around current chapter */
+int reader_focus_catalog(ApiContext *ctx, ReaderDocument *doc);
 
 /* ====================== Utility Functions ====================== */
 
