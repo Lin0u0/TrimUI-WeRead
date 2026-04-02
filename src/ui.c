@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "ui_internal.h"
 
 #if HAVE_SDL
 
@@ -25,85 +26,7 @@
 #include "shelf.h"
 #include "state.h"
 
-typedef enum {
-    VIEW_SHELF = 0,
-    VIEW_LOGIN = 1,
-    VIEW_READER = 2,
-    VIEW_BOOTSTRAP = 3,
-    VIEW_OPENING = 4
-} UiView;
-
-typedef enum {
-    UI_ROTATE_LANDSCAPE = 0,
-    UI_ROTATE_RIGHT_PORTRAIT = 1,
-    UI_ROTATE_LEFT_PORTRAIT = 2
-} UiRotation;
-
-typedef enum {
-    UI_REPEAT_NONE = 0,
-    UI_REPEAT_SHELF_PREV,
-    UI_REPEAT_SHELF_NEXT,
-    UI_REPEAT_CATALOG_UP,
-    UI_REPEAT_CATALOG_DOWN,
-    UI_REPEAT_CATALOG_PAGE_PREV,
-    UI_REPEAT_CATALOG_PAGE_NEXT,
-    UI_REPEAT_PAGE_PREV,
-    UI_REPEAT_PAGE_NEXT
-} UiRepeatAction;
-
-typedef struct {
-    int canvas_w;
-    int canvas_h;
-    int content_x;
-    int content_w;
-    int reader_content_w;
-    int reader_content_h;
-} UiLayout;
-
-typedef struct {
-    UiRepeatAction action;
-    Uint32 next_tick;
-} UiRepeatState;
-
-typedef struct {
-    float shelf_selected_visual;
-    int shelf_initialized;
-    float catalog_progress;
-    Uint32 last_tick;
-    Uint32 view_fade_start_tick;
-    Uint32 view_fade_duration_ms;
-    int view_fade_active;
-} UiMotionState;
-
-typedef struct {
-    int available;
-    char value_path[64];
-    Uint32 next_allowed_tick;
-} UiHapticState;
-
-typedef struct {
-    ReaderDocument doc;
-    char source_target[2048];
-    char **lines;
-    int *line_offsets;
-    int line_count;
-    int line_capacity;
-    int lines_per_page;
-    int line_height;
-    int current_page;
-    int catalog_open;
-    int catalog_selected;
-    int content_font_size;
-    TTF_Font *content_font;
-    Uint32 progress_start_tick;
-    Uint32 progress_pause_tick;
-    Uint32 progress_pause_deadline_tick;
-    Uint32 progress_report_due_tick;
-    int progress_initialized;
-    int progress_paused;
-    int progress_initial_report_pending;
-    int progress_session_expired;
-} ReaderViewState;
+/* Types are now in ui_internal.h */
 
 typedef struct {
     char data_dir[512];
@@ -245,7 +168,15 @@ static void ui_platform_haptic_poll(UiHapticState *state, Uint32 now);
 static void ui_platform_haptic_pulse(UiHapticState *state, Uint32 duration_ms,
                                      Uint32 cooldown_ms);
 static Uint32 ui_frame_interval_ms(UiView view, const UiMotionState *motion_state,
-                                   Uint32 poor_network_toast_until, Uint32 now);
+                                   Uint32 poor_network_toast_until,
+                                   Uint32 exit_confirm_until, Uint32 now);
+static int ui_recreate_scene_texture(SDL_Renderer *renderer, SDL_Texture **scene_texture,
+                                     const UiLayout *layout);
+static void ui_battery_state_update(UiBatteryState *state, Uint32 now);
+static void render_header_status(SDL_Renderer *renderer, TTF_Font *body_font,
+                                 const char *text, const UiLayout *layout);
+static void render_exit_confirm_hint(SDL_Renderer *renderer, TTF_Font *body_font,
+                                     Uint32 hint_until, const UiLayout *layout);
 
 static int ui_join_path_checked(char *dst, size_t dst_size, const char *dir, const char *name) {
     size_t dir_len;
@@ -268,6 +199,7 @@ static int ui_join_path_checked(char *dst, size_t dst_size, const char *dir, con
     return 0;
 }
 
+/* ui_copy_string is used locally, keep static */
 static void ui_copy_string(char *dst, size_t dst_size, const char *src) {
     size_t copy_len;
 
@@ -290,43 +222,8 @@ static void ui_copy_string(char *dst, size_t dst_size, const char *src) {
     dst[copy_len] = '\0';
 }
 
+/* Constants are now in ui_internal.h, but we need local copies of some */
 enum {
-    UI_CANVAS_WIDTH = 1024,
-    UI_CANVAS_HEIGHT = 768,
-    UI_CANVAS_PORTRAIT_WIDTH = 768,
-    UI_CANVAS_PORTRAIT_HEIGHT = 1024,
-    UI_TITLE_FONT_SIZE = 36,
-    UI_BODY_FONT_SIZE = 28,
-    UI_READER_CONTENT_FONT_SIZE = 36,
-    UI_READER_EXTRA_LEADING = 10,
-    UI_READER_PARAGRAPH_GAP_LINES = 0,
-    UI_READER_CONTENT_WIDTH = 912,
-    UI_READER_CONTENT_HEIGHT = 640,
-    UI_SHELF_COVER_TEXTURE_KEEP_RADIUS = 4,
-    UI_INPUT_REPEAT_DELAY_MS = 280,
-    UI_PAGE_REPEAT_DELAY_MS = 340,
-    UI_INPUT_REPEAT_INTERVAL_MS = 85,
-    UI_FRAME_INTERVAL_ACTIVE_MS = 33,
-    UI_FRAME_INTERVAL_LOADING_MS = 100,
-    UI_FRAME_INTERVAL_READER_IDLE_MS = 180,
-    UI_PROGRESS_REPORT_INTERVAL_MS = 30000,
-    UI_PROGRESS_PAUSE_TIMEOUT_MS = 120000,
-    UI_CHAPTER_PREFETCH_RADIUS = 5,
-    UI_TOAST_DURATION_MS = 3000,
-    UI_TOAST_FADE_MS = 280,
-    UI_VIEW_FADE_DURATION_MS = 320
-};
-
-enum {
-    UI_BRIGHTNESS_MIN = 0,
-    UI_BRIGHTNESS_MAX = 10,
-    UI_BRIGHTNESS_DEFAULT = 7,
-    DISP_LCD_SET_BRIGHTNESS = 0x102
-};
-
-enum {
-    UI_HAPTIC_GPIO = 227,
-    UI_HAPTIC_NAV_MS = 38,
     UI_HAPTIC_CONFIRM_MS = 58,
     UI_HAPTIC_EMPHASIS_MS = 78
 };
@@ -687,15 +584,18 @@ static void ui_platform_haptic_pulse(UiHapticState *state, Uint32 duration_ms,
 }
 
 static Uint32 ui_frame_interval_ms(UiView view, const UiMotionState *motion_state,
-                                   Uint32 poor_network_toast_until, Uint32 now) {
+                                   Uint32 poor_network_toast_until,
+                                   Uint32 exit_confirm_until, Uint32 now) {
     int animated = 0;
 
     if (motion_state) {
         animated = motion_state->view_fade_active ||
-            motion_state->catalog_progress > 0.001f ||
-            motion_state->catalog_progress < 0.999f;
+            motion_state->catalog_animating_active;
     }
     if (poor_network_toast_until > now) {
+        animated = 1;
+    }
+    if (exit_confirm_until > now) {
         animated = 1;
     }
     if (view == VIEW_BOOTSTRAP || view == VIEW_OPENING) {
@@ -780,6 +680,39 @@ static int ui_platform_lock_screen(int tg5040_input) {
     sync();
     rc = system("sh -c 'echo mem > /sys/power/state'");
     return rc == 0 ? 0 : -1;
+}
+
+static int ui_platform_restore_after_sleep(SDL_Renderer *renderer, SDL_Texture **scene_texture,
+                                           const UiLayout *layout, int tg5040_input,
+                                           int brightness_level) {
+    if (!renderer || !scene_texture || !layout) {
+        return -1;
+    }
+
+    /* Let the display and SDL video backend settle after resume before we
+     * rebuild render targets and force a fresh present. */
+    usleep(150 * 1000);
+    SDL_PumpEvents();
+
+    if (ui_recreate_scene_texture(renderer, scene_texture, layout) != 0) {
+        fprintf(stderr, "Failed to recreate scene texture after resume: %s\n", SDL_GetError());
+        return -1;
+    }
+
+    SDL_SetRenderTarget(renderer, NULL);
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+    SDL_RenderPresent(renderer);
+
+    if (brightness_level >= UI_BRIGHTNESS_MIN && brightness_level <= UI_BRIGHTNESS_MAX) {
+        /* Some tg5040 firmwares restore the panel power before the brightness
+         * controller is ready, so nudge it twice with a small gap. */
+        ui_platform_apply_brightness_level(tg5040_input, brightness_level);
+        usleep(30 * 1000);
+        ui_platform_apply_brightness_level(tg5040_input, brightness_level);
+    }
+
+    return 0;
 }
 
 static int ui_is_tg5040_platform(const char *platform) {
@@ -1830,8 +1763,168 @@ static void draw_qr(SDL_Renderer *renderer, const char *path, const SDL_Rect *sl
     SDL_FreeSurface(surface);
 }
 
+static int ui_read_first_line(const char *path, char *buf, size_t buf_size) {
+    FILE *fp;
+
+    if (!path || !buf || buf_size == 0) {
+        return -1;
+    }
+    fp = fopen(path, "r");
+    if (!fp) {
+        return -1;
+    }
+    if (!fgets(buf, (int)buf_size, fp)) {
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    buf[strcspn(buf, "\r\n")] = '\0';
+    return 0;
+}
+
+static int ui_read_battery_percent(int *percent_out) {
+    static const char *paths[] = {
+        "/sys/class/power_supply/battery/capacity",
+        "/sys/class/power_supply/BAT0/capacity",
+        "/sys/class/power_supply/max170xx_battery/capacity",
+        "/sys/class/power_supply/axp2202-battery/capacity",
+        NULL
+    };
+    char buf[32];
+
+    if (!percent_out) {
+        return -1;
+    }
+    for (int i = 0; paths[i]; i++) {
+        int value;
+        if (ui_read_first_line(paths[i], buf, sizeof(buf)) != 0) {
+            continue;
+        }
+        value = atoi(buf);
+        if (value >= 0 && value <= 100) {
+            *percent_out = value;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int ui_read_battery_charging(int *charging_out) {
+    static const char *paths[] = {
+        "/sys/class/power_supply/battery/status",
+        "/sys/class/power_supply/BAT0/status",
+        "/sys/class/power_supply/max170xx_battery/status",
+        "/sys/class/power_supply/axp2202-battery/status",
+        NULL
+    };
+    char buf[32];
+
+    if (!charging_out) {
+        return -1;
+    }
+    for (int i = 0; paths[i]; i++) {
+        if (ui_read_first_line(paths[i], buf, sizeof(buf)) != 0) {
+            continue;
+        }
+        *charging_out = strcmp(buf, "Charging") == 0 || strcmp(buf, "Full") == 0;
+        return 0;
+    }
+    return -1;
+}
+
+static void ui_battery_state_update(UiBatteryState *state, Uint32 now) {
+    int percent;
+    int charging = 0;
+
+    if (!state || state->next_poll_tick > now) {
+        return;
+    }
+    if (ui_read_battery_percent(&percent) == 0) {
+        state->available = 1;
+        state->percent = percent;
+        if (ui_read_battery_charging(&charging) == 0) {
+            state->charging = charging;
+        } else {
+            state->charging = 0;
+        }
+        snprintf(state->text, sizeof(state->text), "%d%%%s", state->percent,
+                 state->charging ? "+" : "");
+    } else {
+        state->available = 0;
+        state->percent = -1;
+        state->charging = 0;
+        snprintf(state->text, sizeof(state->text), "--%%");
+    }
+    state->next_poll_tick = now + UI_BATTERY_POLL_INTERVAL_MS;
+}
+
+static void render_header_status(SDL_Renderer *renderer, TTF_Font *body_font,
+                                 const char *text, const UiLayout *layout) {
+    const UiTheme *theme = ui_current_theme();
+    int canvas_w = layout ? layout->canvas_w : UI_CANVAS_WIDTH;
+    int cw = layout ? layout->content_w : canvas_w;
+    int cx = layout ? layout->content_x : 0;
+    int text_w = 0;
+    int text_h = 0;
+    int y;
+
+    if (!renderer || !body_font || !text || !text[0]) {
+        return;
+    }
+    TTF_SizeUTF8(body_font, text, &text_w, &text_h);
+    y = (60 - text_h) / 2;
+    draw_text(renderer, body_font, cx + cw - 32 - text_w, y, theme->muted, text);
+}
+
+static void render_exit_confirm_hint(SDL_Renderer *renderer, TTF_Font *body_font,
+                                     Uint32 hint_until, const UiLayout *layout) {
+    Uint32 now = SDL_GetTicks();
+    const char *msg = "\xE5\x86\x8D\xE6\xAC\xA1\xE6\x8C\x89 B \xE9\x80\x80\xE5\x87\xBA";
+    int tw = 0, th = 0;
+    int pad_x = 18, pad_y = 9;
+    int canvas_w = layout ? layout->canvas_w : UI_CANVAS_WIDTH;
+    int canvas_h = layout ? layout->canvas_h : UI_CANVAS_HEIGHT;
+    SDL_Rect bg;
+    Uint8 alpha;
+    Uint32 remaining;
+    Uint32 elapsed;
+    float phase = 1.0f;
+    float slide_progress = 1.0f;
+    int base_y;
+
+    if (!renderer || !body_font || now >= hint_until) {
+        return;
+    }
+
+    remaining = hint_until - now;
+    elapsed = UI_EXIT_CONFIRM_DURATION_MS > remaining ? UI_EXIT_CONFIRM_DURATION_MS - remaining : 0;
+    if (elapsed < UI_TOAST_FADE_MS) {
+        phase = ui_ease_out_cubic((float)elapsed / (float)UI_TOAST_FADE_MS);
+    } else if (remaining < UI_TOAST_FADE_MS) {
+        phase = ui_clamp01f((float)remaining / (float)UI_TOAST_FADE_MS);
+    }
+    alpha = (Uint8)(215.0f * phase);
+    slide_progress = ui_ease_out_cubic(phase);
+
+    TTF_SizeUTF8(body_font, msg, &tw, &th);
+    bg.w = tw + pad_x * 2;
+    bg.h = th + pad_y * 2;
+    bg.x = (canvas_w - bg.w) / 2;
+    base_y = canvas_h - bg.h - 24;
+    bg.y = base_y + (int)((1.0f - slide_progress) * 18.0f);
+
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, alpha);
+    SDL_RenderFillRect(renderer, &bg);
+    {
+        SDL_Color white = { 255, 255, 255, alpha };
+        draw_text(renderer, body_font, bg.x + pad_x, bg.y + pad_y, white, msg);
+    }
+}
+
 static void render_login(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
-                         AuthSession *session, const char *status, const UiLayout *layout) {
+                         AuthSession *session, const char *status, const char *battery_text,
+                         const UiLayout *layout) {
     const UiTheme *theme = ui_current_theme();
     SDL_Color ink = theme->ink;
     SDL_Color muted = theme->muted;
@@ -1898,6 +1991,7 @@ static void render_login(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     SDL_SetRenderDrawColor(renderer, theme->qr_slot_r, theme->qr_slot_g, theme->qr_slot_b, 255);
     SDL_RenderFillRect(renderer, &qr_slot);
     draw_rect_outline(renderer, &qr_slot, line, 1);
+    render_header_status(renderer, body_font, battery_text, layout);
 
     if (session && session->qr_png_path[0]) {
         draw_qr(renderer, session->qr_png_path, &qr_slot);
@@ -1963,7 +2057,8 @@ static void render_poor_network_toast(SDL_Renderer *renderer, TTF_Font *body_fon
 }
 
 static void render_loading(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
-                           const char *title, const char *status, const UiLayout *layout) {
+                           const char *title, const char *status, const char *battery_text,
+                           const UiLayout *layout) {
     const UiTheme *theme = ui_current_theme();
     SDL_Color ink = theme->ink;
     SDL_Color muted = theme->muted;
@@ -2005,6 +2100,7 @@ static void render_loading(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Fon
         TTF_SizeUTF8(body_font, status, &status_w, NULL);
         draw_text(renderer, body_font, cx - status_w / 2, cy + 122, muted, status);
     }
+    render_header_status(renderer, body_font, battery_text, layout);
 }
 
 static void render_shelf_cover(SDL_Renderer *renderer, TTF_Font *body_font, SDL_Color ink,
@@ -2062,7 +2158,7 @@ static void render_shelf_cover(SDL_Renderer *renderer, TTF_Font *body_font, SDL_
 static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
                          ApiContext *ctx, cJSON *nuxt, ShelfCoverCache *cover_cache,
                          int selected, float selected_pos, int start,
-                         const char *status, const UiLayout *layout) {
+                         const char *status, const char *battery_text, const UiLayout *layout) {
     const int margin = 32;
     const int cover_w = 272;
     const int cover_h = 382;
@@ -2125,6 +2221,7 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
         int empty_w = 0;
         /* 书架为空 */
         const char *empty_text = "\xE4\xB9\xA6\xE6\x9E\xB6\xE4\xB8\xBA\xE7\xA9\xBA";
+        render_header_status(renderer, body_font, battery_text, layout);
         TTF_SizeUTF8(title_font, empty_text, &empty_w, NULL);
         draw_text(renderer, title_font, window_x + window_w / 2 - empty_w / 2, window_h / 2 - 40, ink, empty_text);
         return;
@@ -2138,6 +2235,7 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
                       window_w - margin * 2 - 140,
                       title_buf, sizeof(title_buf));
     draw_text(renderer, title_font, window_x + margin, title_y, ink, title_buf);
+    render_header_status(renderer, body_font, battery_text, layout);
 
     for (int i = (int)floorf(selected_pos) - 3; i <= (int)ceilf(selected_pos) + 3; i++) {
         cJSON *book = cJSON_GetArrayItem(books, i);
@@ -3423,6 +3521,18 @@ static void chapter_prefetch_cache_reset(ChapterPrefetchCache *cache) {
     }
 }
 
+static int chapter_prefetch_cache_has_running_work(const ChapterPrefetchCache *cache) {
+    if (!cache) {
+        return 0;
+    }
+    for (int i = 0; i < (int)(sizeof(cache->slots) / sizeof(cache->slots[0])); i++) {
+        if (cache->slots[i].thread || cache->slots[i].state.running) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int reader_expand_catalog_for_selection(ApiContext *ctx, ReaderViewState *state,
                                                int direction, char *status, size_t status_size) {
     int added_count = 0;
@@ -3681,7 +3791,8 @@ static int reader_progress_update(ApiContext *ctx, ReaderViewState *state,
 }
 
 static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
-                          ReaderViewState *state, const UiLayout *layout) {
+                          ReaderViewState *state, const char *battery_text,
+                          const UiLayout *layout) {
     static const int margin = 32;
     static const int header_h = 60;
     static const int footer_h = 56;
@@ -3734,6 +3845,7 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
                       cw - 2 * margin - 140,
                       title_buf, sizeof(title_buf));
     draw_text(renderer, title_font, cx + margin, title_y, muted, title_buf);
+    render_header_status(renderer, body_font, battery_text, layout);
 
     if (end_line > state->line_count) {
         end_line = state->line_count;
@@ -4049,7 +4161,12 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     UiRepeatState repeat_state;
     UiMotionState motion_state;
     UiHapticState haptic_state;
+    UiBatteryState battery_state;
     Uint32 poor_network_toast_until = 0;
+    Uint32 exit_confirm_until = 0;
+    Uint32 lock_button_ignore_until = 0;
+    Uint32 last_lock_trigger_tick = 0;
+    time_t last_clock_minute = 0;
     int rc = -1;
 
     memset(&session, 0, sizeof(session));
@@ -4065,6 +4182,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     memset(&repeat_state, 0, sizeof(repeat_state));
     memset(&motion_state, 0, sizeof(motion_state));
     memset(&haptic_state, 0, sizeof(haptic_state));
+    memset(&battery_state, 0, sizeof(battery_state));
     snprintf(qr_path, sizeof(qr_path), "%s/weread-login-qr.png", ctx->data_dir);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_JOYSTICK) != 0) {
@@ -4146,16 +4264,37 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     while (running) {
         SDL_Event event;
         Uint32 frame_now = SDL_GetTicks();
+        time_t wall_now = time(NULL);
         float dt_seconds = motion_state.last_tick > 0 && frame_now > motion_state.last_tick ?
             (float)(frame_now - motion_state.last_tick) / 1000.0f : 0.0f;
         UiView frame_view_before_updates = view;
         int catalog_open_before_updates = reader_state.catalog_open;
+        int reader_input_seen = 0;
+        int render_requested = 0;
+        time_t current_clock_minute = wall_now / 60;
 
         motion_state.last_tick = frame_now;
+        if (last_clock_minute == 0) {
+            last_clock_minute = current_clock_minute;
+        } else if (current_clock_minute != last_clock_minute) {
+            last_clock_minute = current_clock_minute;
+            render_requested = 1;
+        }
+        ui_battery_state_update(&battery_state, frame_now);
         ui_platform_haptic_poll(&haptic_state, frame_now);
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = 0;
+            } else if (event.type == SDL_RENDER_TARGETS_RESET ||
+                       event.type == SDL_RENDER_DEVICE_RESET) {
+                if (ui_recreate_scene_texture(renderer, &scene_texture, &current_layout) != 0) {
+                    fprintf(stderr, "Failed to recover renderer after reset: %s\n", SDL_GetError());
+                    running = 0;
+                    break;
+                }
+                motion_state.last_tick = SDL_GetTicks();
+                repeat_state.action = UI_REPEAT_NONE;
+                repeat_state.next_tick = 0;
             } else if (event.type == SDL_JOYBUTTONUP) {
                 if (tg5040_input && event.jbutton.button == TG5040_JOY_SELECT) {
                     tg5040_select_pressed = 0;
@@ -4166,6 +4305,9 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                        event.type == SDL_JOYBUTTONDOWN ||
                        event.type == SDL_JOYHATMOTION ||
                        event.type == SDL_JOYAXISMOTION) {
+                if (view == VIEW_READER) {
+                    reader_input_seen = 1;
+                }
                 if (tg5040_input && event.type == SDL_JOYBUTTONDOWN) {
                     if (event.jbutton.button == TG5040_JOY_SELECT) {
                         tg5040_select_pressed = 1;
@@ -4188,8 +4330,14 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         /* 正在打开书籍... */
                         snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE6\x89\x93\xE5\xBC\x80\xE4\xB9\xA6\xE7\xB1\x8D...");
                     } else {
-                        running = 0;
-                        ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 50);
+                        if (exit_confirm_until > frame_now) {
+                            running = 0;
+                            ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 50);
+                        } else {
+                            exit_confirm_until = frame_now + UI_EXIT_CONFIRM_DURATION_MS;
+                            render_requested = 1;
+                            ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
+                        }
                     }
                 } else if (ui_event_is_dark_mode_toggle(&event, tg5040_input,
                                                         tg5040_select_pressed)) {
@@ -4218,15 +4366,28 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                  "\xE4\xBA\xAE\xE5\xBA\xA6 %d/10", brightness_level);
                         ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
                     }
-                } else if (ui_event_is_lock_button(&event)) {
+                } else if (ui_event_is_lock_button(&event) &&
+                           frame_now >= lock_button_ignore_until &&
+                           (last_lock_trigger_tick == 0 ||
+                            frame_now - last_lock_trigger_tick >= 1000)) {
+                    last_lock_trigger_tick = frame_now;
                     if (view == VIEW_READER) {
                         reader_progress_flush_blocking(ctx, &reader_state, 1);
                         reader_save_local_position(ctx, &reader_state);
                     }
-                    if (ui_platform_lock_screen(tg5040_input) == 0 &&
-                        brightness_level >= UI_BRIGHTNESS_MIN &&
-                        brightness_level <= UI_BRIGHTNESS_MAX) {
-                        ui_platform_apply_brightness_level(tg5040_input, brightness_level);
+                    if (ui_platform_lock_screen(tg5040_input) == 0) {
+                        tg5040_select_pressed = 0;
+                        tg5040_start_pressed = 0;
+                        repeat_state.action = UI_REPEAT_NONE;
+                        repeat_state.next_tick = 0;
+                        motion_state.last_tick = SDL_GetTicks();
+                        lock_button_ignore_until = motion_state.last_tick + 1200;
+                        if (ui_platform_restore_after_sleep(renderer, &scene_texture,
+                                                            &current_layout, tg5040_input,
+                                                            brightness_level) != 0) {
+                            running = 0;
+                            break;
+                        }
                     }
                 } else if (ui_event_is_rotate_combo(&event, tg5040_input,
                                                     tg5040_select_pressed,
@@ -4604,6 +4765,9 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                        shelf_nuxt, &selected, shelf_status,
                                        sizeof(shelf_status), &current_layout,
                                        &chapter_prefetch_cache);
+                if (view == VIEW_READER) {
+                    render_requested = 1;
+                }
                 repeat_state.next_tick = now + UI_INPUT_REPEAT_INTERVAL_MS;
             }
         }
@@ -4627,6 +4791,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
         if (startup_thread_handle && !startup_state.running) {
             SDL_WaitThread(startup_thread_handle, NULL);
             startup_thread_handle = NULL;
+            render_requested = 1;
             if (startup_state.session_ok == 1 && startup_state.shelf_nuxt) {
                 cJSON_Delete(shelf_nuxt);
                 shelf_nuxt = startup_state.shelf_nuxt;
@@ -4664,6 +4829,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
         if (reader_open_thread_handle && !reader_open.running) {
             SDL_WaitThread(reader_open_thread_handle, NULL);
             reader_open_thread_handle = NULL;
+            render_requested = 1;
             if (reader_open.poor_network) {
                 poor_network_toast_until = SDL_GetTicks() + 3000;
             }
@@ -4727,8 +4893,10 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
         }
         motion_state.catalog_progress =
             ui_motion_step(motion_state.catalog_progress, reader_state.catalog_open ? 1.0f : 0.0f,
-                           12.0f, dt_seconds);
-        if (fabsf(motion_state.catalog_progress - (reader_state.catalog_open ? 1.0f : 0.0f)) < 0.001f) {
+                           UI_CATALOG_ANIMATION_SPEED, dt_seconds);
+        motion_state.catalog_animating_active =
+            fabsf(motion_state.catalog_progress - (reader_state.catalog_open ? 1.0f : 0.0f)) >= 0.001f;
+        if (!motion_state.catalog_animating_active) {
             motion_state.catalog_progress = reader_state.catalog_open ? 1.0f : 0.0f;
         }
         if (frame_view_before_updates != view ||
@@ -4741,6 +4909,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
         if (view == VIEW_LOGIN && login_start.running == 0 && login_thread) {
             SDL_WaitThread(login_thread, NULL);
             login_thread = NULL;
+            render_requested = 1;
             if (login_start.success) {
                 session = login_start.session;
                 /* 二维码已生成，等待扫码确认... */
@@ -4768,6 +4937,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
         if (view == VIEW_LOGIN && login_active) {
             if (login_poll.running) {
                 if (SDL_GetTicks() - last_poll > 1200) {
+                    render_requested = 1;
                     if (login_poll.last_status == AUTH_POLL_SCANNED) {
                         /* 已扫码，等待确认... */
                         snprintf(status, sizeof(status), "\xE5\xB7\xB2\xE6\x89\xAB\xE7\xA0\x81\xEF\xBC\x8C\xE7\xAD\x89\xE5\xBE\x85\xE7\xA1\xAE\xE8\xAE\xA4...");
@@ -4780,6 +4950,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
             } else if (login_poll_thread_handle) {
                 SDL_WaitThread(login_poll_thread_handle, NULL);
                 login_poll_thread_handle = NULL;
+                render_requested = 1;
                 if (login_poll.completed) {
                     cJSON_Delete(shelf_nuxt);
                     shelf_nuxt = shelf_load(ctx, 1, NULL);
@@ -4799,56 +4970,120 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
             }
         }
 
-        SDL_SetRenderTarget(renderer, scene_texture);
-
-        if (view == VIEW_LOGIN) {
-            render_login(renderer, title_font, body_font, &session, status, &current_layout);
-        } else if (view == VIEW_READER) {
-            render_reader(renderer, title_font, body_font, &reader_state, &current_layout);
-            if (motion_state.catalog_progress > 0.001f) {
-                render_catalog_overlay(renderer, title_font, body_font, &reader_state,
-                                       motion_state.catalog_progress, &current_layout);
-            }
-        } else if (view == VIEW_BOOTSTRAP || view == VIEW_OPENING) {
-            render_loading(renderer, title_font, body_font, loading_title, status, &current_layout);
-        } else {
-            render_shelf(renderer, title_font, body_font, ctx, shelf_nuxt, &shelf_covers,
-                         selected, motion_state.shelf_selected_visual,
-                         shelf_start, shelf_status, &current_layout);
-        }
-        if (ctx->poor_network) {
-            ctx->poor_network = 0;
-            poor_network_toast_until = SDL_GetTicks() + 3000;
-        }
-        if (poor_network_toast_until > SDL_GetTicks()) {
-            render_poor_network_toast(renderer, body_font, poor_network_toast_until, &current_layout);
-        }
         {
-            Uint8 scene_alpha = 255;
+            Uint32 now = SDL_GetTicks();
+            int toast_visible = poor_network_toast_until > now;
+            int catalog_animating = motion_state.catalog_animating_active;
+            int should_render = 1;
 
-            if (motion_state.view_fade_active) {
-                Uint32 elapsed = SDL_GetTicks() - motion_state.view_fade_start_tick;
-                float progress = motion_state.view_fade_duration_ms > 0 ?
-                    (float)elapsed / (float)motion_state.view_fade_duration_ms : 1.0f;
-
-                if (progress >= 1.0f) {
-                    motion_state.view_fade_active = 0;
-                } else {
-                    scene_alpha = ui_view_fade_alpha(progress);
-                }
+            if (view == VIEW_READER &&
+                !reader_input_seen &&
+                !render_requested &&
+                !motion_state.view_fade_active &&
+                !catalog_animating &&
+                !toast_visible) {
+                should_render = 0;
             }
-            ui_present_scene(renderer, scene_texture, rotation, scene_alpha);
+
+            if (should_render) {
+                SDL_SetRenderTarget(renderer, scene_texture);
+
+                if (view == VIEW_LOGIN) {
+                    render_login(renderer, title_font, body_font, &session, status,
+                                 battery_state.text, &current_layout);
+                } else if (view == VIEW_READER) {
+                    render_reader(renderer, title_font, body_font, &reader_state,
+                                  battery_state.text, &current_layout);
+                    if (motion_state.catalog_progress > 0.001f) {
+                        render_catalog_overlay(renderer, title_font, body_font, &reader_state,
+                                               motion_state.catalog_progress, &current_layout);
+                    }
+                } else if (view == VIEW_BOOTSTRAP || view == VIEW_OPENING) {
+                    render_loading(renderer, title_font, body_font, loading_title, status,
+                                   battery_state.text, &current_layout);
+                } else {
+                    render_shelf(renderer, title_font, body_font, ctx, shelf_nuxt, &shelf_covers,
+                                 selected, motion_state.shelf_selected_visual,
+                                 shelf_start, shelf_status, battery_state.text, &current_layout);
+                }
+                if (ctx->poor_network) {
+                    ctx->poor_network = 0;
+                    poor_network_toast_until = SDL_GetTicks() + 3000;
+                    toast_visible = 1;
+                }
+                if (toast_visible) {
+                    render_poor_network_toast(renderer, body_font, poor_network_toast_until,
+                                              &current_layout);
+                }
+                if (exit_confirm_until > SDL_GetTicks()) {
+                    render_exit_confirm_hint(renderer, body_font, exit_confirm_until, &current_layout);
+                }
+                {
+                    Uint8 scene_alpha = 255;
+
+                    if (motion_state.view_fade_active) {
+                        Uint32 elapsed = SDL_GetTicks() - motion_state.view_fade_start_tick;
+                        float progress = motion_state.view_fade_duration_ms > 0 ?
+                            (float)elapsed / (float)motion_state.view_fade_duration_ms : 1.0f;
+
+                        if (progress >= 1.0f) {
+                            motion_state.view_fade_active = 0;
+                        } else {
+                            scene_alpha = ui_view_fade_alpha(progress);
+                        }
+                    }
+                    ui_present_scene(renderer, scene_texture, rotation, scene_alpha);
+                }
+                SDL_RenderPresent(renderer);
+            }
         }
-        SDL_RenderPresent(renderer);
 
         {
             Uint32 sleep_budget = ui_frame_interval_ms(view, &motion_state,
                                                        poor_network_toast_until,
+                                                       exit_confirm_until,
                                                        SDL_GetTicks());
             Uint32 frame_elapsed = SDL_GetTicks() - frame_now;
 
             if (frame_elapsed < sleep_budget) {
                 SDL_Delay(sleep_budget - frame_elapsed);
+            } else if (sleep_budget == 0) {
+                Uint32 now = SDL_GetTicks();
+                time_t wait_wall_now = time(NULL);
+                int ms_until_next_minute =
+                    (int)(((wait_wall_now / 60) + 1) * 60 - wait_wall_now) * 1000;
+                int background_busy =
+                    startup_thread_handle ||
+                    reader_open_thread_handle ||
+                    login_thread ||
+                    login_poll_thread_handle ||
+                    shelf_cover_download_thread_handle ||
+                    progress_report_thread_handle ||
+                    chapter_prefetch_cache_has_running_work(&chapter_prefetch_cache);
+                int reader_idle = view == VIEW_READER &&
+                                  !reader_input_seen &&
+                                  !render_requested;
+                int wait_timeout_ms;
+                SDL_Event waited_event;
+
+                if (reader_idle) {
+                    wait_timeout_ms = background_busy ? 50 : 250;
+                } else if (!motion_state.view_fade_active &&
+                           poor_network_toast_until <= now) {
+                    wait_timeout_ms = background_busy ? 33 : 100;
+                } else {
+                    wait_timeout_ms = 0;
+                }
+
+                if (wait_timeout_ms > 0 && ms_until_next_minute > 0 &&
+                    ms_until_next_minute < wait_timeout_ms) {
+                    wait_timeout_ms = ms_until_next_minute;
+                }
+
+                if (wait_timeout_ms > 0 &&
+                    SDL_WaitEventTimeout(&waited_event, wait_timeout_ms)) {
+                    SDL_PushEvent(&waited_event);
+                }
             }
         }
     }

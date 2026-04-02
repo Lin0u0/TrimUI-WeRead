@@ -289,7 +289,7 @@ int state_load_reader_position_by_book_id(ApiContext *ctx, const char *book_id,
     return 0;
 }
 
-int state_save_dark_mode(ApiContext *ctx, int dark_mode) {
+static int state_save_int_preference(ApiContext *ctx, const char *key, int value) {
     cJSON *json = state_read_json(ctx, "preferences.json");
     int rc;
 
@@ -300,15 +300,18 @@ int state_save_dark_mode(ApiContext *ctx, int dark_mode) {
             return -1;
         }
     }
-    if (cJSON_GetObjectItemCaseSensitive(json, "darkMode")) {
-        cJSON_ReplaceItemInObjectCaseSensitive(json, "darkMode",
-                                               cJSON_CreateNumber(dark_mode ? 1 : 0));
+    if (cJSON_GetObjectItemCaseSensitive(json, key)) {
+        cJSON_ReplaceItemInObjectCaseSensitive(json, key, cJSON_CreateNumber(value));
     } else {
-        cJSON_AddNumberToObject(json, "darkMode", dark_mode ? 1 : 0);
+        cJSON_AddNumberToObject(json, key, value);
     }
     rc = state_write_json(ctx, "preferences.json", json);
     cJSON_Delete(json);
     return rc;
+}
+
+int state_save_dark_mode(ApiContext *ctx, int dark_mode) {
+    return state_save_int_preference(ctx, "darkMode", dark_mode ? 1 : 0);
 }
 
 int state_load_dark_mode(ApiContext *ctx) {
@@ -324,25 +327,7 @@ int state_load_dark_mode(ApiContext *ctx) {
 }
 
 int state_save_brightness_level(ApiContext *ctx, int brightness_level) {
-    cJSON *json = state_read_json(ctx, "preferences.json");
-    int rc;
-
-    if (!json || !cJSON_IsObject(json)) {
-        cJSON_Delete(json);
-        json = cJSON_CreateObject();
-        if (!json) {
-            return -1;
-        }
-    }
-    if (cJSON_GetObjectItemCaseSensitive(json, "brightnessLevel")) {
-        cJSON_ReplaceItemInObjectCaseSensitive(json, "brightnessLevel",
-                                               cJSON_CreateNumber(brightness_level));
-    } else {
-        cJSON_AddNumberToObject(json, "brightnessLevel", brightness_level);
-    }
-    rc = state_write_json(ctx, "preferences.json", json);
-    cJSON_Delete(json);
-    return rc;
+    return state_save_int_preference(ctx, "brightnessLevel", brightness_level);
 }
 
 int state_load_brightness_level(ApiContext *ctx, int *brightness_level) {

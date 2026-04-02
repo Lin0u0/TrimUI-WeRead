@@ -29,6 +29,18 @@ static void usage(const char *argv0) {
             argv0);
 }
 
+static int require_valid_session(ApiContext *ctx) {
+    int session_ok = auth_check_session(ctx, NULL);
+    if (session_ok != 1) {
+        fprintf(stderr, "%s\n",
+                session_ok == 0 ?
+                "Session expired or not logged in. Run `weread login` first." :
+                "Unable to verify login status. Check your network and try again.");
+        return -1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     ApiContext ctx;
     AppOptions options = {
@@ -92,12 +104,7 @@ int main(int argc, char **argv) {
             rc = 0;
         }
     } else if (strcmp(command, "shelf") == 0) {
-        int session_ok = auth_check_session(&ctx, NULL);
-        if (session_ok != 1) {
-            fprintf(stderr, "%s\n",
-                    session_ok == 0 ?
-                    "Session expired or not logged in. Run `weread login` first." :
-                    "Unable to verify login status. Check your network and try again.");
+        if (require_valid_session(&ctx) != 0) {
             api_cleanup(&ctx);
             return 1;
         }
@@ -108,25 +115,14 @@ int main(int argc, char **argv) {
         int font_size = argi + 1 < argc ? atoi(argv[argi + 1]) : 3;
         if (argi >= argc) {
             usage(argv[0]);
+        } else if (require_valid_session(&ctx) != 0) {
+            api_cleanup(&ctx);
+            return 1;
         } else {
-            int session_ok = auth_check_session(&ctx, NULL);
-            if (session_ok != 1) {
-                fprintf(stderr, "%s\n",
-                        session_ok == 0 ?
-                        "Session expired or not logged in. Run `weread login` first." :
-                        "Unable to verify login status. Check your network and try again.");
-                api_cleanup(&ctx);
-                return 1;
-            }
             rc = reader_print(&ctx, argv[argi], font_size) == 0 ? 0 : 1;
         }
     } else if (strcmp(command, "resume") == 0) {
-        int session_ok = auth_check_session(&ctx, NULL);
-        if (session_ok != 1) {
-            fprintf(stderr, "%s\n",
-                    session_ok == 0 ?
-                    "Session expired or not logged in. Run `weread login` first." :
-                    "Unable to verify login status. Check your network and try again.");
+        if (require_valid_session(&ctx) != 0) {
             api_cleanup(&ctx);
             return 1;
         }
