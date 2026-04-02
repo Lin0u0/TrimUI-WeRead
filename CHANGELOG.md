@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.4
+
+`0.1.4` improves reading flow responsiveness and prepares the codebase for faster iteration.
+
+### Highlights
+
+- Added confirm-to-exit behavior when leaving the reader, reducing accidental returns to the shelf
+- Smoothed catalog open/close motion and selection movement for a more polished navigation feel
+- Preloaded nearby shelf covers more aggressively to reduce visible loading while browsing
+- Continued splitting reader and UI internals into dedicated modules to simplify future maintenance
+
+### Notes
+
+This release focuses on interaction polish rather than new platform support. The biggest user-facing changes are in the reader and shelf browsing experience, while the internal refactors reduce duplication and move catalog, platform, and parsing helpers into clearer modules.
+
 ## 0.1.0
 
 `0.1.0` is the first public release of TrimUI-WeRead.
