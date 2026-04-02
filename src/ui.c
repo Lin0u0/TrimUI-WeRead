@@ -157,8 +157,8 @@ static void chapter_prefetch_maybe_start(ApiContext *ctx, ChapterPrefetchState *
                                          const char *target, int font_size);
 static void render_header_status(SDL_Renderer *renderer, TTF_Font *body_font,
                                  const char *text, const UiLayout *layout);
-static void render_exit_confirm_hint(SDL_Renderer *renderer, TTF_Font *body_font,
-                                     Uint32 hint_until, const UiLayout *layout);
+static void render_confirm_hint(SDL_Renderer *renderer, TTF_Font *body_font,
+                                Uint32 hint_until, const char *msg, const UiLayout *layout);
 
 int ui_join_path_checked(char *dst, size_t dst_size, const char *dir, const char *name) {
     size_t dir_len;
@@ -1005,6 +1005,39 @@ static int shelf_cover_prepare(ApiContext *ctx, SDL_Renderer *renderer, ShelfCov
     return entry->texture ? 0 : -1;
 }
 
+static int shelf_cover_prepare_nearest(ApiContext *ctx, SDL_Renderer *renderer,
+                                       ShelfCoverCache *cache, float selected_pos) {
+    int center;
+
+    if (!ctx || !renderer || !cache || !cache->entries || cache->count <= 0) {
+        return 0;
+    }
+
+    center = (int)lroundf(selected_pos);
+    for (int distance = 0; distance <= 3; distance++) {
+        int candidates[2] = { center - distance, center + distance };
+        int candidate_count = distance == 0 ? 1 : 2;
+
+        for (int i = 0; i < candidate_count; i++) {
+            int index = candidates[i];
+            ShelfCoverEntry *entry;
+
+            if (index < 0 || index >= cache->count) {
+                continue;
+            }
+
+            entry = &cache->entries[index];
+            if (entry->texture || !entry->cache_path[0] || access(entry->cache_path, F_OK) != 0) {
+                continue;
+            }
+
+            return shelf_cover_prepare(ctx, renderer, entry) == 0;
+        }
+    }
+
+    return 0;
+}
+
 static void shelf_cover_cache_build(ApiContext *ctx, cJSON *nuxt, ShelfCoverCache *cache) {
     cJSON *books = shelf_books(nuxt);
     char covers_dir[1024];
@@ -1208,10 +1241,9 @@ static void render_header_status(SDL_Renderer *renderer, TTF_Font *body_font,
     draw_text(renderer, body_font, cx + cw - 32 - text_w, y, theme->muted, text);
 }
 
-static void render_exit_confirm_hint(SDL_Renderer *renderer, TTF_Font *body_font,
-                                     Uint32 hint_until, const UiLayout *layout) {
+static void render_confirm_hint(SDL_Renderer *renderer, TTF_Font *body_font,
+                                Uint32 hint_until, const char *msg, const UiLayout *layout) {
     Uint32 now = SDL_GetTicks();
-    const char *msg = "\xE5\x86\x8D\xE6\xAC\xA1\xE6\x8C\x89 B \xE9\x80\x80\xE5\x87\xBA";
     int tw = 0, th = 0;
     int pad_x = 18, pad_y = 9;
     int canvas_w = layout ? layout->canvas_w : UI_CANVAS_WIDTH;
@@ -1224,7 +1256,7 @@ static void render_exit_confirm_hint(SDL_Renderer *renderer, TTF_Font *body_font
     float slide_progress = 1.0f;
     int base_y;
 
-    if (!renderer || !body_font || now >= hint_until) {
+    if (!renderer || !body_font || !msg || !msg[0] || now >= hint_until) {
         return;
     }
 
@@ -1590,9 +1622,6 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
         cover_rect.x = window_x + (window_w - cover_w) / 2 +
                        (int)lroundf(offset * (float)(cover_w + card_gap));
 
-        if (cover_cache && i < cover_cache->count) {
-            shelf_cover_prepare(ctx, renderer, &cover_cache->entries[i]);
-        }
         render_shelf_cover(renderer, body_font, ink, cover_rect,
                            cover_cache && i < cover_cache->count ? &cover_cache->entries[i] : NULL,
                            title, emphasis);
@@ -3067,7 +3096,7 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
 }
 
 static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
-                                   ReaderViewState *state, float progress,
+                                   ReaderViewState *state, float progress, float selected_pos,
                                    const UiLayout *layout) {
     const UiTheme *theme = ui_current_theme();
     SDL_Color ink = theme->ink;
@@ -3089,9 +3118,12 @@ static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font,
     char title_buf[256];
     int header_title_y;
     float eased = ui_ease_out_cubic(progress);
+    float row_eased = ui_ease_out_cubic(progress);
+    float selected_clamped;
     int panel_offset;
     Uint8 backdrop_alpha;
     Uint8 panel_alpha;
+    SDL_Rect selected_row;
 
     if (!state || !state->doc.catalog_items || state->doc.catalog_count <= 0) {
         return;
@@ -3105,7 +3137,7 @@ static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font,
         header.x = panel.x;
         header.w = panel.w;
     }
-    panel_offset = (int)lroundf((1.0f - eased) * 48.0f);
+    panel_offset = (int)lroundf((1.0f - eased) * 72.0f);
     panel.x += panel_offset;
     header.x = panel.x;
     list_top = header.y + header.h + 12;
@@ -3113,7 +3145,14 @@ static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font,
     if (visible < 6) {
         visible = 6;
     }
-    start = state->catalog_selected - visible / 2;
+    selected_clamped = selected_pos;
+    if (selected_clamped < 0.0f) {
+        selected_clamped = 0.0f;
+    }
+    if (selected_clamped > (float)(state->doc.catalog_count - 1)) {
+        selected_clamped = (float)(state->doc.catalog_count - 1);
+    }
+    start = (int)floorf(selected_clamped) - visible / 2;
     if (start < 0) {
         start = 0;
     }
@@ -3145,18 +3184,32 @@ static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font,
     header_title_y = header.y + (header.h - (title_font ? TTF_FontHeight(title_font) : 36)) / 2;
     draw_text(renderer, title_font, header.x + 24, header_title_y, ink, title_buf);
 
+    selected_row.x = panel.x + 16;
+    selected_row.y = list_top + (int)lroundf((selected_clamped - (float)start) * (float)line_height);
+    selected_row.w = panel.w - 32;
+    selected_row.h = line_height - 4;
+    if (selected_row.y < list_top) {
+        selected_row.y = list_top;
+    }
+    if (selected_row.y + selected_row.h > panel.y + panel.h - 20) {
+        selected_row.y = panel.y + panel.h - 20 - selected_row.h;
+    }
+    SDL_SetRenderDrawColor(renderer, theme->catalog_highlight_r, theme->catalog_highlight_g,
+                           theme->catalog_highlight_b, 255);
+    SDL_RenderFillRect(renderer, &selected_row);
+
     for (int i = start; i < end; i++) {
         ReaderCatalogItem *item = &state->doc.catalog_items[i];
         SDL_Rect row = { panel.x + 16, list_top + (i - start) * line_height, panel.w - 32, line_height - 4 };
         char row_buf[256];
         int indent = item->level > 1 ? (item->level - 1) * 20 : 0;
+        int text_x_shift =
+            (int)lroundf((1.0f - row_eased) *
+                         (14.0f + fminf(fabsf((float)i - selected_clamped), 4.0f) * 5.0f));
         SDL_Color color = item->is_lock ? dim : ink;
 
-        if (i == state->catalog_selected) {
-            SDL_SetRenderDrawColor(renderer, theme->catalog_highlight_r, theme->catalog_highlight_g,
-                                   theme->catalog_highlight_b, 255);
-            SDL_RenderFillRect(renderer, &row);
-        } else if (reader_is_catalog_item_current(state, item)) {
+        if (reader_is_catalog_item_current(state, item) &&
+            fabsf((float)i - selected_clamped) >= 0.45f) {
             SDL_SetRenderDrawColor(renderer, theme->catalog_current_r, theme->catalog_current_g,
                                    theme->catalog_current_b, 255);
             SDL_RenderFillRect(renderer, &row);
@@ -3164,7 +3217,7 @@ static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font,
 
         fit_text_ellipsis(body_font, item->title ? item->title : "(untitled)",
                           row.w - 72 - indent, row_buf, sizeof(row_buf));
-        draw_text(renderer, body_font, row.x + 16 + indent, row.y + 6, color, row_buf);
+        draw_text(renderer, body_font, row.x + 16 + indent + text_x_shift, row.y + 6, color, row_buf);
     }
 }
 
@@ -3339,6 +3392,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     UiBatteryState battery_state;
     Uint32 poor_network_toast_until = 0;
     Uint32 exit_confirm_until = 0;
+    Uint32 reader_exit_confirm_until = 0;
     Uint32 lock_button_ignore_until = 0;
     Uint32 last_lock_trigger_tick = 0;
     time_t last_clock_minute = 0;
@@ -3495,11 +3549,16 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         if (reader_state.catalog_open) {
                             reader_state.catalog_open = 0;
                             ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
-                        } else {
+                        } else if (reader_exit_confirm_until > frame_now) {
                             reader_progress_flush_blocking(ctx, &reader_state, 1);
                             reader_save_local_position(ctx, &reader_state);
+                            reader_exit_confirm_until = 0;
                             view = VIEW_SHELF;
                             ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 50);
+                        } else {
+                            reader_exit_confirm_until = frame_now + UI_EXIT_CONFIRM_DURATION_MS;
+                            render_requested = 1;
+                            ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
                         }
                     } else if (view == VIEW_OPENING && reader_open.running) {
                         /* 正在打开书籍... */
@@ -3912,9 +3971,16 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         reader_save_local_position(ctx, &reader_state);
                         ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 45);
                     } else if (ui_event_is_keydown(&event, SDLK_b)) {
-                        reader_save_local_position(ctx, &reader_state);
-                        view = VIEW_SHELF;
-                        ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 50);
+                        if (reader_exit_confirm_until > frame_now) {
+                            reader_save_local_position(ctx, &reader_state);
+                            reader_exit_confirm_until = 0;
+                            view = VIEW_SHELF;
+                            ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 50);
+                        } else {
+                            reader_exit_confirm_until = frame_now + UI_EXIT_CONFIRM_DURATION_MS;
+                            render_requested = 1;
+                            ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
+                        }
                     }
                 }
             }
@@ -3961,6 +4027,10 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
         if (view == VIEW_SHELF) {
             shelf_cover_download_maybe_start(ctx, &shelf_covers, &shelf_cover_download,
                                              &shelf_cover_download_thread_handle, selected);
+            if (shelf_cover_prepare_nearest(ctx, renderer, &shelf_covers,
+                                            motion_state.shelf_selected_visual)) {
+                render_requested = 1;
+            }
         }
 
         if (startup_thread_handle && !startup_state.running) {
@@ -4061,14 +4131,35 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
             motion_state.shelf_initialized = 1;
         } else {
             motion_state.shelf_selected_visual =
-                ui_motion_step(motion_state.shelf_selected_visual, (float)selected, 10.0f, dt_seconds);
+                ui_motion_step(motion_state.shelf_selected_visual, (float)selected,
+                               UI_SHELF_SELECTION_SPEED, dt_seconds);
             if (fabsf(motion_state.shelf_selected_visual - (float)selected) < 0.001f) {
                 motion_state.shelf_selected_visual = (float)selected;
             }
         }
+        if (!motion_state.catalog_selection_initialized) {
+            motion_state.catalog_selected_visual = (float)reader_state.catalog_selected;
+            motion_state.catalog_selection_initialized = 1;
+        } else {
+            motion_state.catalog_selected_visual =
+                ui_motion_step(motion_state.catalog_selected_visual,
+                               (float)reader_state.catalog_selected,
+                               UI_CATALOG_SELECTION_SPEED, dt_seconds);
+            if (fabsf(motion_state.catalog_selected_visual -
+                      (float)reader_state.catalog_selected) < 0.001f) {
+                motion_state.catalog_selected_visual = (float)reader_state.catalog_selected;
+            }
+        }
+        motion_state.catalog_selection_animating_active =
+            reader_state.catalog_open &&
+            fabsf(motion_state.catalog_selected_visual -
+                  (float)reader_state.catalog_selected) >= 0.001f;
         motion_state.catalog_progress =
             ui_motion_step(motion_state.catalog_progress, reader_state.catalog_open ? 1.0f : 0.0f,
-                           UI_CATALOG_ANIMATION_SPEED, dt_seconds);
+                           reader_state.catalog_open ?
+                           UI_CATALOG_ANIMATION_SPEED :
+                           UI_CATALOG_CLOSE_ANIMATION_SPEED,
+                           dt_seconds);
         motion_state.catalog_animating_active =
             fabsf(motion_state.catalog_progress - (reader_state.catalog_open ? 1.0f : 0.0f)) >= 0.001f;
         if (!motion_state.catalog_animating_active) {
@@ -4171,7 +4262,9 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                   battery_state.text, &current_layout);
                     if (motion_state.catalog_progress > 0.001f) {
                         render_catalog_overlay(renderer, title_font, body_font, &reader_state,
-                                               motion_state.catalog_progress, &current_layout);
+                                               motion_state.catalog_progress,
+                                               motion_state.catalog_selected_visual,
+                                               &current_layout);
                     }
                 } else if (view == VIEW_BOOTSTRAP || view == VIEW_OPENING) {
                     render_loading(renderer, title_font, body_font, loading_title, status,
@@ -4190,8 +4283,14 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                     render_poor_network_toast(renderer, body_font, poor_network_toast_until,
                                               &current_layout);
                 }
-                if (exit_confirm_until > SDL_GetTicks()) {
-                    render_exit_confirm_hint(renderer, body_font, exit_confirm_until, &current_layout);
+                if (reader_exit_confirm_until > SDL_GetTicks()) {
+                    render_confirm_hint(renderer, body_font, reader_exit_confirm_until,
+                                        "\xE5\x86\x8D\xE6\xAC\xA1\xE6\x8C\x89 B \xE8\xBF\x94\xE5\x9B\x9E\xE4\xB9\xA6\xE6\x9E\xB6",
+                                        &current_layout);
+                } else if (exit_confirm_until > SDL_GetTicks()) {
+                    render_confirm_hint(renderer, body_font, exit_confirm_until,
+                                        "\xE5\x86\x8D\xE6\xAC\xA1\xE6\x8C\x89 B \xE9\x80\x80\xE5\x87\xBA",
+                                        &current_layout);
                 }
                 {
                     Uint8 scene_alpha = 255;

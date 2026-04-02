@@ -151,7 +151,8 @@ Uint32 ui_frame_interval_ms(UiView view, const UiMotionState *motion_state,
 
     if (motion_state) {
         animated = motion_state->view_fade_active ||
-            motion_state->catalog_animating_active;
+            motion_state->catalog_animating_active ||
+            motion_state->catalog_selection_animating_active;
     }
     if (poor_network_toast_until > now) {
         animated = 1;

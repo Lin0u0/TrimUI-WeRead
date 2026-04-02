@@ -65,6 +65,7 @@ typedef struct {
     float catalog_selected_visual;
     int catalog_animating_active;
     int catalog_selection_initialized;
+    int catalog_selection_animating_active;
     Uint32 last_tick;
     Uint32 view_fade_start_tick;
     Uint32 view_fade_duration_ms;
@@ -141,8 +142,9 @@ enum {
 };
 
 #define UI_CATALOG_ANIMATION_SPEED 7.0f
+#define UI_CATALOG_CLOSE_ANIMATION_SPEED 12.0f
 #define UI_SHELF_SELECTION_SPEED 12.0f
-#define UI_CATALOG_SELECTION_SPEED 16.0f
+#define UI_CATALOG_SELECTION_SPEED 24.0f
 
 enum {
     UI_BRIGHTNESS_MIN = 0,
