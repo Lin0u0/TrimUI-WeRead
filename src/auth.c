@@ -121,7 +121,8 @@ int auth_start(ApiContext *ctx, AuthSession *session, const char *qr_png_path) {
     if (!url) {
         goto cleanup;
     }
-    sprintf(url, "%s/qrcode?url=%s", WEREAD_API_BASE_URL, escaped);
+    snprintf(url, strlen(WEREAD_API_BASE_URL) + strlen("/qrcode?url=") + strlen(escaped) + 1,
+             "%s/qrcode?url=%s", WEREAD_API_BASE_URL, escaped);
     qr_json = api_get_json(ctx, url);
     if (!qr_json) {
         goto cleanup;
