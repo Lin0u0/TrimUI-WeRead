@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include "state.h"
 
 int ui_tg5040_scale_brightness(int level) {
     switch (level) {
@@ -197,26 +198,37 @@ int ui_platform_apply_brightness_level(int tg5040_input, int level) {
     return 0;
 }
 
-int ui_platform_step_brightness(int tg5040_input, int *current_level, int delta) {
-    int new_level;
+int ui_platform_step_brightness(ApiContext *ctx, int tg5040_input, int delta,
+                                int *brightness_level) {
+    int next_level;
 
-    if (!tg5040_input || !current_level) {
+    if (!brightness_level || delta == 0) {
         return -1;
     }
-    new_level = *current_level + delta;
-    if (new_level < UI_BRIGHTNESS_MIN) {
-        new_level = UI_BRIGHTNESS_MIN;
-    } else if (new_level > UI_BRIGHTNESS_MAX) {
-        new_level = UI_BRIGHTNESS_MAX;
+
+    next_level = *brightness_level;
+    if (next_level < UI_BRIGHTNESS_MIN || next_level > UI_BRIGHTNESS_MAX) {
+        next_level = UI_BRIGHTNESS_DEFAULT;
     }
-    if (new_level == *current_level) {
+    next_level += delta;
+    if (next_level < UI_BRIGHTNESS_MIN) {
+        next_level = UI_BRIGHTNESS_MIN;
+    } else if (next_level > UI_BRIGHTNESS_MAX) {
+        next_level = UI_BRIGHTNESS_MAX;
+    }
+    if (next_level == *brightness_level && *brightness_level >= UI_BRIGHTNESS_MIN &&
+        *brightness_level <= UI_BRIGHTNESS_MAX) {
         return 0;
     }
-    if (ui_platform_apply_brightness_level(tg5040_input, new_level) == 0) {
-        *current_level = new_level;
-        return 0;
+    if (ui_platform_apply_brightness_level(tg5040_input, next_level) != 0) {
+        return -1;
     }
-    return -1;
+
+    *brightness_level = next_level;
+    if (ctx) {
+        state_save_brightness_level(ctx, next_level);
+    }
+    return 0;
 }
 
 int ui_platform_lock_screen(int tg5040_input) {
@@ -225,7 +237,9 @@ int ui_platform_lock_screen(int tg5040_input) {
     if (!tg5040_input) {
         return -1;
     }
-    rc = system("echo 1 > /sys/class/graphics/fb0/blank 2>/dev/null");
+
+    sync();
+    rc = system("sh -c 'echo mem > /sys/power/state'");
     return rc == 0 ? 0 : -1;
 }
 
@@ -236,22 +250,28 @@ int ui_platform_restore_after_sleep(SDL_Renderer *renderer, SDL_Texture **scene_
         return -1;
     }
 
+    /* Let the display and SDL video backend settle after resume before we
+     * rebuild render targets and force a fresh present. */
     usleep(150 * 1000);
     SDL_PumpEvents();
 
-    /* Recreate scene texture - function defined in ui.c */
-    extern int ui_recreate_scene_texture(SDL_Renderer *renderer, SDL_Texture **scene_texture,
-                                         const UiLayout *layout);
     if (ui_recreate_scene_texture(renderer, scene_texture, layout) != 0) {
+        fprintf(stderr, "Failed to recreate scene texture after resume: %s\n", SDL_GetError());
         return -1;
     }
 
+    SDL_SetRenderTarget(renderer, NULL);
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
     SDL_RenderPresent(renderer);
 
-    (void)system("echo 0 > /sys/class/graphics/fb0/blank 2>/dev/null");
-    (void)ui_platform_apply_brightness_level(tg5040_input, brightness_level);
+    if (brightness_level >= UI_BRIGHTNESS_MIN && brightness_level <= UI_BRIGHTNESS_MAX) {
+        /* Some tg5040 firmwares restore the panel power before the brightness
+         * controller is ready, so nudge it twice with a small gap. */
+        ui_platform_apply_brightness_level(tg5040_input, brightness_level);
+        usleep(30 * 1000);
+        ui_platform_apply_brightness_level(tg5040_input, brightness_level);
+    }
 
     return 0;
 }
@@ -260,53 +280,99 @@ int ui_is_tg5040_platform(const char *platform) {
     return platform && strcmp(platform, "tg5040") == 0;
 }
 
-void ui_battery_state_update(UiBatteryState *state, Uint32 now) {
+static int ui_read_first_line(const char *path, char *buf, size_t buf_size) {
     FILE *fp;
-    char buf[64];
 
-    if (!state) {
+    if (!path || !buf || buf_size == 0) {
+        return -1;
+    }
+    fp = fopen(path, "r");
+    if (!fp) {
+        return -1;
+    }
+    if (!fgets(buf, (int)buf_size, fp)) {
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    buf[strcspn(buf, "\r\n")] = '\0';
+    return 0;
+}
+
+static int ui_read_battery_percent(int *percent_out) {
+    static const char *paths[] = {
+        "/sys/class/power_supply/battery/capacity",
+        "/sys/class/power_supply/BAT0/capacity",
+        "/sys/class/power_supply/max170xx_battery/capacity",
+        "/sys/class/power_supply/axp2202-battery/capacity",
+        NULL
+    };
+    char buf[32];
+
+    if (!percent_out) {
+        return -1;
+    }
+    for (int i = 0; paths[i]; i++) {
+        int value;
+        if (ui_read_first_line(paths[i], buf, sizeof(buf)) != 0) {
+            continue;
+        }
+        value = atoi(buf);
+        if (value >= 0 && value <= 100) {
+            *percent_out = value;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int ui_read_battery_charging(int *charging_out) {
+    static const char *paths[] = {
+        "/sys/class/power_supply/battery/status",
+        "/sys/class/power_supply/BAT0/status",
+        "/sys/class/power_supply/max170xx_battery/status",
+        "/sys/class/power_supply/axp2202-battery/status",
+        NULL
+    };
+    char buf[32];
+
+    if (!charging_out) {
+        return -1;
+    }
+    for (int i = 0; paths[i]; i++) {
+        if (ui_read_first_line(paths[i], buf, sizeof(buf)) != 0) {
+            continue;
+        }
+        *charging_out = strcmp(buf, "Charging") == 0 || strcmp(buf, "Full") == 0;
+        return 0;
+    }
+    return -1;
+}
+
+void ui_battery_state_update(UiBatteryState *state, Uint32 now) {
+    int percent;
+    int charging = 0;
+
+    if (!state || state->next_poll_tick > now) {
         return;
     }
-
-    if (!state->available) {
-        fp = fopen("/sys/class/power_supply/battery/present", "r");
-        if (fp) {
-            if (fgets(buf, sizeof(buf), fp) && buf[0] == '1') {
-                state->available = 1;
-            }
-            fclose(fp);
+    if (ui_read_battery_percent(&percent) == 0) {
+        state->available = 1;
+        state->percent = percent;
+        if (ui_read_battery_charging(&charging) == 0) {
+            state->charging = charging;
+        } else {
+            state->charging = 0;
         }
-        if (!state->available) {
-            return;
-        }
-    }
-
-    if ((Sint32)(now - state->next_poll_tick) < 0) {
-        return;
+        snprintf(state->text, sizeof(state->text), "%d%%%s", state->percent,
+                 state->charging ? "+" : "");
+    } else {
+        state->available = 0;
+        state->percent = -1;
+        state->charging = 0;
+        snprintf(state->text, sizeof(state->text), "--%%");
     }
     state->next_poll_tick = now + UI_BATTERY_POLL_INTERVAL_MS;
-
-    fp = fopen("/sys/class/power_supply/battery/capacity", "r");
-    if (fp) {
-        if (fgets(buf, sizeof(buf), fp)) {
-            state->percent = atoi(buf);
-        }
-        fclose(fp);
-    }
-
-    fp = fopen("/sys/class/power_supply/battery/status", "r");
-    if (fp) {
-        if (fgets(buf, sizeof(buf), fp)) {
-            state->charging = (strstr(buf, "Charging") != NULL);
-        }
-        fclose(fp);
-    }
-
-    if (state->charging) {
-        snprintf(state->text, sizeof(state->text), "%d%% ⚡", state->percent);
-    } else {
-        snprintf(state->text, sizeof(state->text), "%d%%", state->percent);
-    }
 }
 
 #endif /* HAVE_SDL */

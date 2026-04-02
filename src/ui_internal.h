@@ -62,7 +62,9 @@ typedef struct {
     float shelf_selected_visual;
     int shelf_initialized;
     float catalog_progress;
+    float catalog_selected_visual;
     int catalog_animating_active;
+    int catalog_selection_initialized;
     Uint32 last_tick;
     Uint32 view_fade_start_tick;
     Uint32 view_fade_duration_ms;
@@ -139,6 +141,8 @@ enum {
 };
 
 #define UI_CATALOG_ANIMATION_SPEED 7.0f
+#define UI_SHELF_SELECTION_SPEED 12.0f
+#define UI_CATALOG_SELECTION_SPEED 16.0f
 
 enum {
     UI_BRIGHTNESS_MIN = 0,
@@ -177,7 +181,7 @@ void ui_platform_shutdown_haptics(UiHapticState *state);
 void ui_platform_haptic_poll(UiHapticState *state, Uint32 now);
 void ui_platform_haptic_pulse(UiHapticState *state, Uint32 duration_ms, Uint32 cooldown_ms);
 int ui_platform_apply_brightness_level(int tg5040_input, int level);
-int ui_platform_step_brightness(int tg5040_input, int *current_level, int delta);
+int ui_platform_step_brightness(ApiContext *ctx, int tg5040_input, int delta, int *brightness_level);
 int ui_platform_lock_screen(int tg5040_input);
 int ui_platform_restore_after_sleep(SDL_Renderer *renderer, SDL_Texture **scene_texture,
                                     const UiLayout *layout, int tg5040_input, int brightness_level);
@@ -234,6 +238,11 @@ int get_char_width_fast(TTF_Font *font, const char *s, int char_len);
 int is_forbidden_line_start_punct(const char *text);
 const char *skip_line_start_spacing(const char *text, const char *end);
 
+/* ====================== ui.c ====================== */
+
+int ui_recreate_scene_texture(SDL_Renderer *renderer, SDL_Texture **scene_texture,
+                              const UiLayout *layout);
+
 /* ====================== Utility functions ====================== */
 
 int ui_join_path_checked(char *dst, size_t dst_size, const char *dir, const char *name);
@@ -241,8 +250,8 @@ void ui_copy_string(char *dst, size_t dst_size, const char *src);
 float ui_clamp01f(float x);
 float ui_ease_out_cubic(float t);
 float ui_ease_in_out_cubic(float t);
-float ui_view_fade_alpha(const UiMotionState *state, Uint32 now);
-float ui_motion_step(float current, float target, float speed, Uint32 dt_ms);
+Uint8 ui_view_fade_alpha(float progress);
+float ui_motion_step(float current, float target, float speed, float dt_seconds);
 
 #endif /* HAVE_SDL */
 #endif /* UI_INTERNAL_H */

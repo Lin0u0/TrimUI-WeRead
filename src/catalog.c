@@ -184,12 +184,12 @@ static int json_array_to_param_map(cJSON *array, ReaderParamMapItem **items_out,
 
 /* ====================== Catalog Item Operations ====================== */
 
-static int catalog_item_cmp_chapter_idx(const void *a, const void *b) {
+int catalog_item_cmp_chapter_idx(const void *a, const void *b) {
     return ((const ReaderCatalogItem *)a)->chapter_idx -
            ((const ReaderCatalogItem *)b)->chapter_idx;
 }
 
-static int reader_catalog_find_index(ReaderCatalogItem *items, int count, const char *chapter_uid) {
+int reader_catalog_find_index(ReaderCatalogItem *items, int count, const char *chapter_uid) {
     if (!items || count <= 0 || !chapter_uid || !*chapter_uid) {
         return -1;
     }
@@ -672,7 +672,7 @@ cleanup:
 
 /* ====================== Catalog JSON Parsing ====================== */
 
-static int reader_parse_catalogloadmore_json(cJSON *json, const char *current_chapter_uid,
+int reader_parse_catalogloadmore_json(cJSON *json, const char *current_chapter_uid,
                                              ReaderCatalogItem **items_out, int *count_out,
                                              int *first_idx_out, int *last_idx_out) {
     cJSON *chapter_infos;
@@ -778,7 +778,7 @@ static int reader_parse_catalogloadmore_json(cJSON *json, const char *current_ch
 
 /* ====================== Catalog Fetching ====================== */
 
-static int reader_fetch_catalog_chunk(ApiContext *ctx, const char *book_id, int type,
+int reader_fetch_catalog_chunk(ApiContext *ctx, const char *book_id, int type,
                                       int range_start, int range_end, const char *current_chapter_uid,
                                       ReaderCatalogItem **items_out, int *count_out,
                                       int *first_idx_out, int *last_idx_out) {

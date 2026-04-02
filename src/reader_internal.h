@@ -41,6 +41,23 @@ char *reader_extract_resolved_value_after_marker(const char *html, const char *b
 /* Free catalog items array */
 void reader_catalog_items_free(ReaderCatalogItem *items, int count);
 
+/* Comparator for sorting catalog items by chapter_idx */
+int catalog_item_cmp_chapter_idx(const void *a, const void *b);
+
+/* Find index of chapter_uid in catalog items array */
+int reader_catalog_find_index(ReaderCatalogItem *items, int count, const char *chapter_uid);
+
+/* Parse catalogloadmore API JSON response */
+int reader_parse_catalogloadmore_json(cJSON *json, const char *current_chapter_uid,
+                                      ReaderCatalogItem **items_out, int *count_out,
+                                      int *first_idx_out, int *last_idx_out);
+
+/* Fetch a catalog chunk from API */
+int reader_fetch_catalog_chunk(ApiContext *ctx, const char *book_id, int type,
+                               int range_start, int range_end, const char *current_chapter_uid,
+                               ReaderCatalogItem **items_out, int *count_out,
+                               int *first_idx_out, int *last_idx_out);
+
 /* Parse catalog from reader block in HTML */
 int reader_parse_catalog(const char *html, const char *reader_block_start,
                          const char *reader_block_end, ReaderCatalogItem **items_out,
@@ -61,9 +78,7 @@ int reader_join_path_checked(char *dst, size_t dst_size, const char *dir, const 
 char *reader_dup_or_null(const char *s);
 
 /* Choose best summary between page and document */
-const char *reader_choose_summary(const ReaderDocument *doc, const char *page_summary);
 
 /* Add chapter UID to JSON payload (handles string vs number) */
-void reader_add_chapter_uid_field(cJSON *payload, const char *chapter_uid);
 
 #endif /* READER_INTERNAL_H */

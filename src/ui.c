@@ -8,16 +8,13 @@
 #include <SDL_ttf.h>
 #include <ctype.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "stb_image.h"
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 #include "auth.h"
@@ -25,8 +22,6 @@
 #include "reader.h"
 #include "shelf.h"
 #include "state.h"
-
-/* Types are now in ui_internal.h */
 
 typedef struct {
     char data_dir[512];
@@ -137,7 +132,6 @@ typedef struct {
 static int reader_total_pages(ReaderViewState *state);
 static int reader_find_page_for_offset(const ReaderViewState *state, int target_offset);
 static int reader_reset_content_font(TTF_Font *fallback_font, ReaderViewState *state);
-static void char_width_cache_reset(void);
 static int reader_has_cloud_position(const ReaderDocument *doc);
 static const char *reader_find_progress_target(const ReaderViewState *state);
 static int reader_view_adopt_document(TTF_Font *font, ReaderDocument *doc,
@@ -161,24 +155,12 @@ static int chapter_prefetch_cache_adopt(ChapterPrefetchCache *cache, const char 
 static void chapter_prefetch_maybe_start(ApiContext *ctx, ChapterPrefetchState *state,
                                          SDL_Thread **thread_handle,
                                          const char *target, int font_size);
-static int ui_write_text_file(const char *path, const char *value);
-static int ui_platform_init_haptics(int tg5040_input, UiHapticState *state);
-static void ui_platform_shutdown_haptics(UiHapticState *state);
-static void ui_platform_haptic_poll(UiHapticState *state, Uint32 now);
-static void ui_platform_haptic_pulse(UiHapticState *state, Uint32 duration_ms,
-                                     Uint32 cooldown_ms);
-static Uint32 ui_frame_interval_ms(UiView view, const UiMotionState *motion_state,
-                                   Uint32 poor_network_toast_until,
-                                   Uint32 exit_confirm_until, Uint32 now);
-static int ui_recreate_scene_texture(SDL_Renderer *renderer, SDL_Texture **scene_texture,
-                                     const UiLayout *layout);
-static void ui_battery_state_update(UiBatteryState *state, Uint32 now);
 static void render_header_status(SDL_Renderer *renderer, TTF_Font *body_font,
                                  const char *text, const UiLayout *layout);
 static void render_exit_confirm_hint(SDL_Renderer *renderer, TTF_Font *body_font,
                                      Uint32 hint_until, const UiLayout *layout);
 
-static int ui_join_path_checked(char *dst, size_t dst_size, const char *dir, const char *name) {
+int ui_join_path_checked(char *dst, size_t dst_size, const char *dir, const char *name) {
     size_t dir_len;
     size_t name_len;
 
@@ -199,8 +181,7 @@ static int ui_join_path_checked(char *dst, size_t dst_size, const char *dir, con
     return 0;
 }
 
-/* ui_copy_string is used locally, keep static */
-static void ui_copy_string(char *dst, size_t dst_size, const char *src) {
+void ui_copy_string(char *dst, size_t dst_size, const char *src) {
     size_t copy_len;
 
     if (!dst || dst_size == 0) {
@@ -222,7 +203,6 @@ static void ui_copy_string(char *dst, size_t dst_size, const char *src) {
     dst[copy_len] = '\0';
 }
 
-/* Constants are now in ui_internal.h, but we need local copies of some */
 enum {
     UI_HAPTIC_CONFIRM_MS = 58,
     UI_HAPTIC_EMPHASIS_MS = 78
@@ -390,7 +370,7 @@ static const UiTheme *ui_current_theme(void) {
     return ui_dark_mode ? &ui_theme_dark : &ui_theme_light;
 }
 
-static float ui_clamp01f(float value) {
+float ui_clamp01f(float value) {
     if (value < 0.0f) {
         return 0.0f;
     }
@@ -400,14 +380,14 @@ static float ui_clamp01f(float value) {
     return value;
 }
 
-static float ui_ease_out_cubic(float value) {
+float ui_ease_out_cubic(float value) {
     float t = ui_clamp01f(value);
     float inv = 1.0f - t;
 
     return 1.0f - inv * inv * inv;
 }
 
-static float ui_ease_in_out_cubic(float value) {
+float ui_ease_in_out_cubic(float value) {
     float t = ui_clamp01f(value);
 
     if (t < 0.5f) {
@@ -417,7 +397,7 @@ static float ui_ease_in_out_cubic(float value) {
     return 1.0f - (t * t * t) / 2.0f;
 }
 
-static Uint8 ui_view_fade_alpha(float progress) {
+Uint8 ui_view_fade_alpha(float progress) {
     float eased;
 
     if (ui_dark_mode) {
@@ -429,7 +409,7 @@ static Uint8 ui_view_fade_alpha(float progress) {
     return (Uint8)(228.0f + eased * 27.0f);
 }
 
-static float ui_motion_step(float current, float target, float speed, float dt_seconds) {
+float ui_motion_step(float current, float target, float speed, float dt_seconds) {
     float factor;
 
     if (dt_seconds <= 0.0f) {
@@ -439,559 +419,6 @@ static float ui_motion_step(float current, float target, float speed, float dt_s
     return current + (target - current) * factor;
 }
 
-enum {
-    TG5040_JOY_B = 0,
-    TG5040_JOY_A = 1,
-    TG5040_JOY_Y = 2,
-    TG5040_JOY_X = 3,
-    TG5040_JOY_L1 = 4,
-    TG5040_JOY_R1 = 5,
-    TG5040_JOY_SELECT = 6,
-    TG5040_JOY_START = 7,
-    TG5040_JOY_MENU = 8,
-    TG5040_JOY_L2 = 9,
-    TG5040_JOY_R2 = 10
-};
-
-static int ui_tg5040_scale_brightness(int level) {
-    switch (level) {
-    case 0: return 1;
-    case 1: return 8;
-    case 2: return 16;
-    case 3: return 32;
-    case 4: return 48;
-    case 5: return 72;
-    case 6: return 96;
-    case 7: return 128;
-    case 8: return 160;
-    case 9: return 192;
-    case 10:
-    default:
-        return 255;
-    }
-}
-
-static int ui_write_text_file(const char *path, const char *value) {
-    ssize_t written;
-    size_t len;
-    int fd;
-
-    if (!path || !value) {
-        return -1;
-    }
-
-    fd = open(path, O_WRONLY | O_CLOEXEC);
-    if (fd < 0) {
-        return -1;
-    }
-
-    len = strlen(value);
-    written = write(fd, value, len);
-    close(fd);
-    return written == (ssize_t)len ? 0 : -1;
-}
-
-static int ui_haptic_write_value(const UiHapticState *state, const char *value) {
-    if (!state || !state->available || !state->value_path[0]) {
-        return -1;
-    }
-    return ui_write_text_file(state->value_path, value);
-}
-
-static int ui_platform_init_haptics(int tg5040_input, UiHapticState *state) {
-    char gpio_path[64];
-
-    if (!state) {
-        return -1;
-    }
-
-    memset(state, 0, sizeof(*state));
-    if (!tg5040_input) {
-        return 0;
-    }
-
-    if (ui_write_text_file("/sys/class/gpio/export", "227") != 0 && errno != EBUSY) {
-        fprintf(stderr, "Haptics: failed to export GPIO %d: %s\n", UI_HAPTIC_GPIO, strerror(errno));
-        return -1;
-    }
-
-    snprintf(gpio_path, sizeof(gpio_path), "/sys/class/gpio/gpio%d/direction", UI_HAPTIC_GPIO);
-    if (ui_write_text_file(gpio_path, "out") != 0) {
-        fprintf(stderr, "Haptics: failed to set direction on %s: %s\n", gpio_path, strerror(errno));
-        return -1;
-    }
-
-    snprintf(gpio_path, sizeof(gpio_path), "/sys/class/gpio/gpio%d/value", UI_HAPTIC_GPIO);
-    if (ui_write_text_file(gpio_path, "0") != 0) {
-        fprintf(stderr, "Haptics: failed to initialize %s: %s\n", gpio_path, strerror(errno));
-        return -1;
-    }
-
-    state->available = 1;
-    snprintf(state->value_path, sizeof(state->value_path), "%s", gpio_path);
-    return 0;
-}
-
-static void ui_platform_shutdown_haptics(UiHapticState *state) {
-    if (!state) {
-        return;
-    }
-
-    if (state->available) {
-        (void)ui_haptic_write_value(state, "0");
-    }
-
-    state->available = 0;
-    state->value_path[0] = '\0';
-    state->next_allowed_tick = 0;
-}
-
-static void ui_platform_haptic_poll(UiHapticState *state, Uint32 now) {
-    (void)state;
-    (void)now;
-}
-
-static void ui_platform_haptic_pulse(UiHapticState *state, Uint32 duration_ms,
-                                     Uint32 cooldown_ms) {
-    Uint32 now;
-
-    if (!state || !state->available) {
-        return;
-    }
-
-    now = SDL_GetTicks();
-    if ((Sint32)(now - state->next_allowed_tick) < 0) {
-        return;
-    }
-
-    if (ui_haptic_write_value(state, "1") != 0) {
-        fprintf(stderr, "Haptics: failed to write 1 to %s: %s\n",
-                state->value_path, strerror(errno));
-        return;
-    }
-
-    if (duration_ms > 0) {
-        usleep((useconds_t)duration_ms * 1000U);
-    }
-
-    if (ui_haptic_write_value(state, "0") != 0) {
-        fprintf(stderr, "Haptics: failed to write 0 to %s: %s\n",
-                state->value_path, strerror(errno));
-        return;
-    }
-
-    state->next_allowed_tick = now + cooldown_ms;
-}
-
-static Uint32 ui_frame_interval_ms(UiView view, const UiMotionState *motion_state,
-                                   Uint32 poor_network_toast_until,
-                                   Uint32 exit_confirm_until, Uint32 now) {
-    int animated = 0;
-
-    if (motion_state) {
-        animated = motion_state->view_fade_active ||
-            motion_state->catalog_animating_active;
-    }
-    if (poor_network_toast_until > now) {
-        animated = 1;
-    }
-    if (exit_confirm_until > now) {
-        animated = 1;
-    }
-    if (view == VIEW_BOOTSTRAP || view == VIEW_OPENING) {
-        return UI_FRAME_INTERVAL_LOADING_MS;
-    }
-    if (view == VIEW_READER) {
-        if (animated) {
-            return UI_FRAME_INTERVAL_ACTIVE_MS;
-        }
-        return UI_FRAME_INTERVAL_READER_IDLE_MS;
-    }
-    return 0;
-}
-
-static int ui_platform_apply_brightness_level(int tg5040_input, int level) {
-    unsigned long param[4] = { 0, 0, 0, 0 };
-    int fd;
-
-    if (!tg5040_input) {
-        return -1;
-    }
-    if (level < UI_BRIGHTNESS_MIN) {
-        level = UI_BRIGHTNESS_MIN;
-    } else if (level > UI_BRIGHTNESS_MAX) {
-        level = UI_BRIGHTNESS_MAX;
-    }
-
-    fd = open("/dev/disp", O_RDWR | O_CLOEXEC);
-    if (fd < 0) {
-        return -1;
-    }
-
-    param[1] = (unsigned long)ui_tg5040_scale_brightness(level);
-    if (ioctl(fd, DISP_LCD_SET_BRIGHTNESS, &param) != 0) {
-        close(fd);
-        return -1;
-    }
-    close(fd);
-    return 0;
-}
-
-static int ui_platform_step_brightness(ApiContext *ctx, int tg5040_input, int delta,
-                                       int *brightness_level) {
-    int next_level;
-
-    if (!brightness_level || delta == 0) {
-        return -1;
-    }
-
-    next_level = *brightness_level;
-    if (next_level < UI_BRIGHTNESS_MIN || next_level > UI_BRIGHTNESS_MAX) {
-        next_level = UI_BRIGHTNESS_DEFAULT;
-    }
-    next_level += delta;
-    if (next_level < UI_BRIGHTNESS_MIN) {
-        next_level = UI_BRIGHTNESS_MIN;
-    } else if (next_level > UI_BRIGHTNESS_MAX) {
-        next_level = UI_BRIGHTNESS_MAX;
-    }
-    if (next_level == *brightness_level && *brightness_level >= UI_BRIGHTNESS_MIN &&
-        *brightness_level <= UI_BRIGHTNESS_MAX) {
-        return 0;
-    }
-    if (ui_platform_apply_brightness_level(tg5040_input, next_level) != 0) {
-        return -1;
-    }
-
-    *brightness_level = next_level;
-    if (ctx) {
-        state_save_brightness_level(ctx, next_level);
-    }
-    return 0;
-}
-
-static int ui_platform_lock_screen(int tg5040_input) {
-    int rc;
-
-    if (!tg5040_input) {
-        return -1;
-    }
-
-    sync();
-    rc = system("sh -c 'echo mem > /sys/power/state'");
-    return rc == 0 ? 0 : -1;
-}
-
-static int ui_platform_restore_after_sleep(SDL_Renderer *renderer, SDL_Texture **scene_texture,
-                                           const UiLayout *layout, int tg5040_input,
-                                           int brightness_level) {
-    if (!renderer || !scene_texture || !layout) {
-        return -1;
-    }
-
-    /* Let the display and SDL video backend settle after resume before we
-     * rebuild render targets and force a fresh present. */
-    usleep(150 * 1000);
-    SDL_PumpEvents();
-
-    if (ui_recreate_scene_texture(renderer, scene_texture, layout) != 0) {
-        fprintf(stderr, "Failed to recreate scene texture after resume: %s\n", SDL_GetError());
-        return -1;
-    }
-
-    SDL_SetRenderTarget(renderer, NULL);
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
-    SDL_RenderPresent(renderer);
-
-    if (brightness_level >= UI_BRIGHTNESS_MIN && brightness_level <= UI_BRIGHTNESS_MAX) {
-        /* Some tg5040 firmwares restore the panel power before the brightness
-         * controller is ready, so nudge it twice with a small gap. */
-        ui_platform_apply_brightness_level(tg5040_input, brightness_level);
-        usleep(30 * 1000);
-        ui_platform_apply_brightness_level(tg5040_input, brightness_level);
-    }
-
-    return 0;
-}
-
-static int ui_is_tg5040_platform(const char *platform) {
-    return platform && strcmp(platform, "tg5040") == 0;
-}
-
-static int ui_event_is_keydown(const SDL_Event *event, SDL_Keycode key) {
-    return event->type == SDL_KEYDOWN && event->key.keysym.sym == key;
-}
-
-static int ui_event_is_tg5040_button_down(const SDL_Event *event, int enabled, Uint8 button) {
-    return enabled && event->type == SDL_JOYBUTTONDOWN && event->jbutton.button == button;
-}
-
-static int ui_event_is_tg5040_axis(const SDL_Event *event, int enabled, Uint8 axis, int negative) {
-    const Sint16 threshold = 16000;
-
-    if (!enabled || event->type != SDL_JOYAXISMOTION || event->jaxis.axis != axis) {
-        return 0;
-    }
-    return negative ? event->jaxis.value <= -threshold : event->jaxis.value >= threshold;
-}
-
-static int ui_event_is_up(const SDL_Event *event, int tg5040_input) {
-    if (ui_event_is_keydown(event, SDLK_UP) || ui_event_is_keydown(event, SDLK_w)) {
-        return 1;
-    }
-    if (tg5040_input && event->type == SDL_JOYHATMOTION) {
-        return (event->jhat.value & SDL_HAT_UP) != 0;
-    }
-    return ui_event_is_tg5040_axis(event, tg5040_input, 1, 1);
-}
-
-static int ui_event_is_down(const SDL_Event *event, int tg5040_input) {
-    if (ui_event_is_keydown(event, SDLK_DOWN) || ui_event_is_keydown(event, SDLK_s)) {
-        return 1;
-    }
-    if (tg5040_input && event->type == SDL_JOYHATMOTION) {
-        return (event->jhat.value & SDL_HAT_DOWN) != 0;
-    }
-    return ui_event_is_tg5040_axis(event, tg5040_input, 1, 0);
-}
-
-static int ui_event_is_left(const SDL_Event *event, int tg5040_input) {
-    if (ui_event_is_keydown(event, SDLK_LEFT) || ui_event_is_keydown(event, SDLK_a)) {
-        return 1;
-    }
-    if (tg5040_input && event->type == SDL_JOYHATMOTION) {
-        return (event->jhat.value & SDL_HAT_LEFT) != 0;
-    }
-    return ui_event_is_tg5040_axis(event, tg5040_input, 0, 1);
-}
-
-static int ui_event_is_right(const SDL_Event *event, int tg5040_input) {
-    if (ui_event_is_keydown(event, SDLK_RIGHT) || ui_event_is_keydown(event, SDLK_d)) {
-        return 1;
-    }
-    if (tg5040_input && event->type == SDL_JOYHATMOTION) {
-        return (event->jhat.value & SDL_HAT_RIGHT) != 0;
-    }
-    return ui_event_is_tg5040_axis(event, tg5040_input, 0, 0);
-}
-
-static int ui_event_is_back(const SDL_Event *event, int tg5040_input) {
-    return ui_event_is_keydown(event, SDLK_ESCAPE) ||
-           ui_event_is_keydown(event, SDLK_b) ||
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_B);
-}
-
-static int ui_event_is_confirm(const SDL_Event *event, int tg5040_input) {
-    return ui_event_is_keydown(event, SDLK_RETURN) ||
-           ui_event_is_keydown(event, SDLK_SPACE) ||
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_A);
-}
-
-static int ui_event_is_shelf_resume(const SDL_Event *event, int tg5040_input) {
-    return ui_event_is_keydown(event, SDLK_r) ||
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_X);
-}
-
-static int ui_event_is_catalog_toggle(const SDL_Event *event, int tg5040_input) {
-    return ui_event_is_keydown(event, SDLK_c) ||
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_X);
-}
-
-static int ui_event_is_rotate(const SDL_Event *event, int tg5040_input) {
-    return ui_event_is_keydown(event, SDLK_TAB) ||
-           0;
-}
-
-static int ui_event_is_rotate_combo(const SDL_Event *event, int tg5040_input,
-                                    int select_pressed, int start_pressed) {
-    return ui_event_is_rotate(event, tg5040_input) ||
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_R2);
-}
-
-static int ui_event_is_dark_mode_toggle(const SDL_Event *event, int tg5040_input,
-                                        int select_pressed) {
-    if (ui_event_is_keydown(event, SDLK_t)) {
-        return 1;
-    }
-    return ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_L2);
-}
-
-static int ui_event_is_brightness_up(const SDL_Event *event, int tg5040_input,
-                                     int start_pressed) {
-    if (ui_event_is_keydown(event, SDLK_RIGHTBRACKET)) {
-        return 1;
-    }
-    return 0;
-}
-
-static int ui_event_is_brightness_down(const SDL_Event *event, int tg5040_input,
-                                       int start_pressed) {
-    if (ui_event_is_keydown(event, SDLK_LEFTBRACKET)) {
-        return 1;
-    }
-    return 0;
-}
-
-static int ui_event_is_lock_button(const SDL_Event *event) {
-    return ui_event_is_keydown(event, SDLK_POWER) ||
-           ui_event_is_keydown(event, SDLK_p);
-}
-
-static int ui_event_is_chapter_prev(const SDL_Event *event, int tg5040_input) {
-    return ui_event_is_up(event, tg5040_input) ||
-           ui_event_is_keydown(event, SDLK_PAGEUP);
-}
-
-static int ui_event_is_chapter_next(const SDL_Event *event, int tg5040_input) {
-    return ui_event_is_down(event, tg5040_input) ||
-           ui_event_is_keydown(event, SDLK_PAGEDOWN);
-}
-
-static int ui_event_is_page_prev(const SDL_Event *event, int tg5040_input) {
-    return ui_event_is_left(event, tg5040_input) ||
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_L1);
-}
-
-static int ui_event_is_page_next(const SDL_Event *event, int tg5040_input) {
-    return ui_event_is_right(event, tg5040_input) ||
-           ui_event_is_confirm(event, tg5040_input) ||
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_R1);
-}
-
-static int ui_any_joystick_button_pressed(SDL_Joystick **joysticks, int joystick_count, Uint8 button) {
-    int i;
-
-    for (i = 0; i < joystick_count; i++) {
-        if (joysticks[i] && SDL_JoystickGetButton(joysticks[i], button)) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int ui_any_joystick_hat_pressed(SDL_Joystick **joysticks, int joystick_count, Uint8 mask) {
-    int i;
-
-    for (i = 0; i < joystick_count; i++) {
-        if (joysticks[i] && (SDL_JoystickGetHat(joysticks[i], 0) & mask) != 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int ui_any_joystick_axis_pressed(SDL_Joystick **joysticks, int joystick_count,
-                                        Uint8 axis, int negative) {
-    const Sint16 threshold = 16000;
-    int i;
-
-    for (i = 0; i < joystick_count; i++) {
-        Sint16 value;
-
-        if (!joysticks[i]) {
-            continue;
-        }
-        value = SDL_JoystickGetAxis(joysticks[i], axis);
-        if ((negative && value <= -threshold) || (!negative && value >= threshold)) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int ui_input_is_up_held(int tg5040_input, SDL_Joystick **joysticks, int joystick_count) {
-    const Uint8 *keys = SDL_GetKeyboardState(NULL);
-
-    return (keys && (keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W])) ||
-           (tg5040_input &&
-            (ui_any_joystick_hat_pressed(joysticks, joystick_count, SDL_HAT_UP) ||
-             ui_any_joystick_axis_pressed(joysticks, joystick_count, 1, 1)));
-}
-
-static int ui_input_is_down_held(int tg5040_input, SDL_Joystick **joysticks, int joystick_count) {
-    const Uint8 *keys = SDL_GetKeyboardState(NULL);
-
-    return (keys && (keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_S])) ||
-           (tg5040_input &&
-            (ui_any_joystick_hat_pressed(joysticks, joystick_count, SDL_HAT_DOWN) ||
-             ui_any_joystick_axis_pressed(joysticks, joystick_count, 1, 0)));
-}
-
-static int ui_input_is_left_held(int tg5040_input, SDL_Joystick **joysticks, int joystick_count) {
-    const Uint8 *keys = SDL_GetKeyboardState(NULL);
-
-    return (keys && (keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_A])) ||
-           (tg5040_input &&
-            (ui_any_joystick_hat_pressed(joysticks, joystick_count, SDL_HAT_LEFT) ||
-             ui_any_joystick_axis_pressed(joysticks, joystick_count, 0, 1)));
-}
-
-static int ui_input_is_right_held(int tg5040_input, SDL_Joystick **joysticks, int joystick_count) {
-    const Uint8 *keys = SDL_GetKeyboardState(NULL);
-
-    return (keys && (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D])) ||
-           (tg5040_input &&
-            (ui_any_joystick_hat_pressed(joysticks, joystick_count, SDL_HAT_RIGHT) ||
-             ui_any_joystick_axis_pressed(joysticks, joystick_count, 0, 0)));
-}
-
-static int ui_input_is_page_prev_held(int tg5040_input, SDL_Joystick **joysticks, int joystick_count) {
-    return ui_input_is_left_held(tg5040_input, joysticks, joystick_count) ||
-           (tg5040_input &&
-            ui_any_joystick_button_pressed(joysticks, joystick_count, TG5040_JOY_L1));
-}
-
-static int ui_input_is_page_next_held(int tg5040_input, SDL_Joystick **joysticks, int joystick_count) {
-    const Uint8 *keys = SDL_GetKeyboardState(NULL);
-
-    return ui_input_is_right_held(tg5040_input, joysticks, joystick_count) ||
-           (keys && (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_SPACE])) ||
-           (tg5040_input &&
-            (ui_any_joystick_button_pressed(joysticks, joystick_count, TG5040_JOY_A) ||
-             ui_any_joystick_button_pressed(joysticks, joystick_count, TG5040_JOY_R1)));
-}
-
-static UiRepeatAction ui_repeat_action_current(UiView view, const ReaderViewState *reader_state,
-                                               int tg5040_input, SDL_Joystick **joysticks,
-                                               int joystick_count) {
-    if (view == VIEW_SHELF) {
-        if (ui_input_is_down_held(tg5040_input, joysticks, joystick_count) ||
-            ui_input_is_right_held(tg5040_input, joysticks, joystick_count)) {
-            return UI_REPEAT_SHELF_NEXT;
-        }
-        if (ui_input_is_up_held(tg5040_input, joysticks, joystick_count) ||
-            ui_input_is_left_held(tg5040_input, joysticks, joystick_count)) {
-            return UI_REPEAT_SHELF_PREV;
-        }
-        return UI_REPEAT_NONE;
-    }
-    if (view != VIEW_READER || !reader_state) {
-        return UI_REPEAT_NONE;
-    }
-    if (reader_state->catalog_open) {
-        if (ui_input_is_up_held(tg5040_input, joysticks, joystick_count)) {
-            return UI_REPEAT_CATALOG_UP;
-        }
-        if (ui_input_is_down_held(tg5040_input, joysticks, joystick_count)) {
-            return UI_REPEAT_CATALOG_DOWN;
-        }
-        if (ui_input_is_left_held(tg5040_input, joysticks, joystick_count)) {
-            return UI_REPEAT_CATALOG_PAGE_PREV;
-        }
-        if (ui_input_is_right_held(tg5040_input, joysticks, joystick_count)) {
-            return UI_REPEAT_CATALOG_PAGE_NEXT;
-        }
-        return UI_REPEAT_NONE;
-    }
-    if (ui_input_is_page_next_held(tg5040_input, joysticks, joystick_count)) {
-        return UI_REPEAT_PAGE_NEXT;
-    }
-    if (ui_input_is_page_prev_held(tg5040_input, joysticks, joystick_count)) {
-        return UI_REPEAT_PAGE_PREV;
-    }
-    return UI_REPEAT_NONE;
-}
 
 static void ui_apply_repeat_action(UiRepeatAction action, ApiContext *ctx, TTF_Font *body_font,
                                    ReaderViewState *reader_state, cJSON *shelf_nuxt, int *selected,
@@ -1162,7 +589,7 @@ static UiRotation ui_rotation_next(UiRotation rotation) {
     }
 }
 
-static int ui_recreate_scene_texture(SDL_Renderer *renderer, SDL_Texture **scene_texture,
+int ui_recreate_scene_texture(SDL_Renderer *renderer, SDL_Texture **scene_texture,
                                      const UiLayout *layout) {
     SDL_Texture *new_texture;
 
@@ -1763,101 +1190,6 @@ static void draw_qr(SDL_Renderer *renderer, const char *path, const SDL_Rect *sl
     SDL_FreeSurface(surface);
 }
 
-static int ui_read_first_line(const char *path, char *buf, size_t buf_size) {
-    FILE *fp;
-
-    if (!path || !buf || buf_size == 0) {
-        return -1;
-    }
-    fp = fopen(path, "r");
-    if (!fp) {
-        return -1;
-    }
-    if (!fgets(buf, (int)buf_size, fp)) {
-        fclose(fp);
-        return -1;
-    }
-    fclose(fp);
-    buf[strcspn(buf, "\r\n")] = '\0';
-    return 0;
-}
-
-static int ui_read_battery_percent(int *percent_out) {
-    static const char *paths[] = {
-        "/sys/class/power_supply/battery/capacity",
-        "/sys/class/power_supply/BAT0/capacity",
-        "/sys/class/power_supply/max170xx_battery/capacity",
-        "/sys/class/power_supply/axp2202-battery/capacity",
-        NULL
-    };
-    char buf[32];
-
-    if (!percent_out) {
-        return -1;
-    }
-    for (int i = 0; paths[i]; i++) {
-        int value;
-        if (ui_read_first_line(paths[i], buf, sizeof(buf)) != 0) {
-            continue;
-        }
-        value = atoi(buf);
-        if (value >= 0 && value <= 100) {
-            *percent_out = value;
-            return 0;
-        }
-    }
-    return -1;
-}
-
-static int ui_read_battery_charging(int *charging_out) {
-    static const char *paths[] = {
-        "/sys/class/power_supply/battery/status",
-        "/sys/class/power_supply/BAT0/status",
-        "/sys/class/power_supply/max170xx_battery/status",
-        "/sys/class/power_supply/axp2202-battery/status",
-        NULL
-    };
-    char buf[32];
-
-    if (!charging_out) {
-        return -1;
-    }
-    for (int i = 0; paths[i]; i++) {
-        if (ui_read_first_line(paths[i], buf, sizeof(buf)) != 0) {
-            continue;
-        }
-        *charging_out = strcmp(buf, "Charging") == 0 || strcmp(buf, "Full") == 0;
-        return 0;
-    }
-    return -1;
-}
-
-static void ui_battery_state_update(UiBatteryState *state, Uint32 now) {
-    int percent;
-    int charging = 0;
-
-    if (!state || state->next_poll_tick > now) {
-        return;
-    }
-    if (ui_read_battery_percent(&percent) == 0) {
-        state->available = 1;
-        state->percent = percent;
-        if (ui_read_battery_charging(&charging) == 0) {
-            state->charging = charging;
-        } else {
-            state->charging = 0;
-        }
-        snprintf(state->text, sizeof(state->text), "%d%%%s", state->percent,
-                 state->charging ? "+" : "");
-    } else {
-        state->available = 0;
-        state->percent = -1;
-        state->charging = 0;
-        snprintf(state->text, sizeof(state->text), "--%%");
-    }
-    state->next_poll_tick = now + UI_BATTERY_POLL_INTERVAL_MS;
-}
-
 static void render_header_status(SDL_Renderer *renderer, TTF_Font *body_font,
                                  const char *text, const UiLayout *layout) {
     const UiTheme *theme = ui_current_theme();
@@ -2298,163 +1630,6 @@ static void reader_view_free(ReaderViewState *state) {
     free(state->line_offsets);
     reader_document_free(&state->doc);
     memset(state, 0, sizeof(*state));
-}
-
-static int utf8_char_len(unsigned char c) {
-    if ((c & 0x80) == 0) return 1;
-    if ((c & 0xE0) == 0xC0) return 2;
-    if ((c & 0xF0) == 0xE0) return 3;
-    if ((c & 0xF8) == 0xF0) return 4;
-    return 1;
-}
-
-static uint32_t utf8_decode(const char *s, int *out_len) {
-    unsigned char c = (unsigned char)s[0];
-    int len = utf8_char_len(c);
-    if (out_len) *out_len = len;
-    if (len == 1) return c;
-    if (len == 2) return ((c & 0x1F) << 6) | (s[1] & 0x3F);
-    if (len == 3) return ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
-    if (len == 4) return ((c & 0x07) << 18) | ((s[1] & 0x3F) << 12) | ((s[2] & 0x3F) << 6) | (s[3] & 0x3F);
-    return c;
-}
-
-static int is_cjk_codepoint(uint32_t cp) {
-    return (cp >= 0x4E00 && cp <= 0x9FFF) ||   /* CJK Unified Ideographs */
-           (cp >= 0x3400 && cp <= 0x4DBF) ||   /* CJK Extension A */
-           (cp >= 0x20000 && cp <= 0x2A6DF) || /* CJK Extension B */
-           (cp >= 0x2A700 && cp <= 0x2B73F) || /* CJK Extension C */
-           (cp >= 0x2B740 && cp <= 0x2B81F) || /* CJK Extension D */
-           (cp >= 0xF900 && cp <= 0xFAFF) ||   /* CJK Compatibility Ideographs */
-           (cp >= 0x3100 && cp <= 0x312F) ||   /* Bopomofo */
-           (cp >= 0x31A0 && cp <= 0x31BF) ||   /* Bopomofo Extended */
-           (cp >= 0x3000 && cp <= 0x303F) ||   /* CJK Symbols and Punctuation */
-           (cp >= 0xFF00 && cp <= 0xFFEF);     /* Halfwidth and Fullwidth Forms */
-}
-
-static int is_cjk_char(const char *s) {
-    uint32_t cp = utf8_decode(s, NULL);
-    return is_cjk_codepoint(cp);
-}
-
-static int is_latin_or_digit(const char *s) {
-    unsigned char c = (unsigned char)*s;
-    if ((c & 0x80) != 0) return 0;
-    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
-}
-
-/* Character width cache for faster text measurement */
-typedef struct {
-    uint32_t codepoint;
-    int width;
-} CharWidthEntry;
-
-#define CHAR_WIDTH_CACHE_SIZE 512
-static CharWidthEntry g_char_width_cache[CHAR_WIDTH_CACHE_SIZE];
-static int g_char_width_cache_count = 0;
-static TTF_Font *g_char_width_cache_font = NULL;
-
-static void char_width_cache_reset(void) {
-    g_char_width_cache_count = 0;
-    g_char_width_cache_font = NULL;
-}
-
-static int char_width_cache_lookup(uint32_t cp, int *width) {
-    for (int i = 0; i < g_char_width_cache_count; i++) {
-        if (g_char_width_cache[i].codepoint == cp) {
-            *width = g_char_width_cache[i].width;
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static void char_width_cache_insert(uint32_t cp, int width) {
-    if (g_char_width_cache_count >= CHAR_WIDTH_CACHE_SIZE) {
-        /* Evict oldest entries by shifting */
-        memmove(&g_char_width_cache[0], &g_char_width_cache[CHAR_WIDTH_CACHE_SIZE / 4],
-                sizeof(CharWidthEntry) * (CHAR_WIDTH_CACHE_SIZE * 3 / 4));
-        g_char_width_cache_count = CHAR_WIDTH_CACHE_SIZE * 3 / 4;
-    }
-    g_char_width_cache[g_char_width_cache_count].codepoint = cp;
-    g_char_width_cache[g_char_width_cache_count].width = width;
-    g_char_width_cache_count++;
-}
-
-static int get_char_width_fast(TTF_Font *font, const char *s, int char_len) {
-    uint32_t cp;
-    int width = 0;
-    char buf[8];
-
-    if (!font || !s || char_len <= 0 || char_len > 4) {
-        return 0;
-    }
-
-    /* Reset cache if font changed */
-    if (font != g_char_width_cache_font) {
-        char_width_cache_reset();
-        g_char_width_cache_font = font;
-    }
-
-    cp = utf8_decode(s, NULL);
-    if (char_width_cache_lookup(cp, &width)) {
-        return width;
-    }
-
-    memcpy(buf, s, (size_t)char_len);
-    buf[char_len] = '\0';
-    TTF_SizeUTF8(font, buf, &width, NULL);
-    char_width_cache_insert(cp, width);
-    return width;
-}
-
-static int is_forbidden_line_start_punct(const char *text) {
-    static const char *tokens[] = {
-        ",", ".", "!", "?", ":", ";", ")", "]", "}", "%",
-        "\xE3\x80\x81",
-        "\xE3\x80\x82",
-        "\xEF\xBC\x8C",
-        "\xEF\xBC\x8E",
-        "\xEF\xBC\x81",
-        "\xEF\xBC\x9F",
-        "\xEF\xBC\x9A",
-        "\xEF\xBC\x9B",
-        "\xEF\xBC\x89",
-        "\xE3\x80\x91",
-        "\xE3\x80\x8D",
-        "\xE3\x80\x8F",
-        "\xE2\x80\x99",
-        "\xE2\x80\x9D",
-        "\xE3\x80\x8B",
-        "\xE3\x80\x89",
-        "\xE3\x80\xBE",
-        NULL
-    };
-
-    if (!text || !*text) {
-        return 0;
-    }
-    for (int i = 0; tokens[i]; i++) {
-        size_t len = strlen(tokens[i]);
-        if (strncmp(text, tokens[i], len) == 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static const char *skip_line_start_spacing(const char *text, const char *end) {
-    const char *p = text;
-
-    while (p && p < end && *p) {
-        int ch_len = utf8_char_len((unsigned char)*p);
-        if (!isspace((unsigned char)*p) &&
-            strncmp(p, "\xE3\x80\x80", 3) != 0) { /* full-width space */
-            break;
-        }
-        p += ch_len;
-    }
-    return p;
 }
 
 static int append_line(ReaderViewState *state, const char *text, size_t len, int start_offset) {
