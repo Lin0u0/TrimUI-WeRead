@@ -76,6 +76,7 @@ typedef struct {
     int available;
     char value_path[64];
     Uint32 next_allowed_tick;
+    Uint32 stop_tick;
 } UiHapticState;
 
 typedef struct {

@@ -3577,6 +3577,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                                         tg5040_select_pressed)) {
                     ui_dark_mode = !ui_dark_mode;
                     state_save_dark_mode(ctx, ui_dark_mode);
+                    render_requested = 1;
                     ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 40);
                 } else if (ui_event_is_brightness_up(&event, tg5040_input,
                                                      tg5040_start_pressed)) {
@@ -3589,6 +3590,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                  "\xE4\xBA\xAE\xE5\xBA\xA6 %d/10", brightness_level);
                         ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
                     }
+                    render_requested = 1;
                 } else if (ui_event_is_brightness_down(&event, tg5040_input,
                                                        tg5040_start_pressed)) {
                     if (ui_platform_step_brightness(ctx, tg5040_input, -1,
@@ -3600,6 +3602,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                  "\xE4\xBA\xAE\xE5\xBA\xA6 %d/10", brightness_level);
                         ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
                     }
+                    render_requested = 1;
                 } else if (ui_event_is_lock_button(&event) &&
                            frame_now >= lock_button_ignore_until &&
                            (last_lock_trigger_tick == 0 ||
@@ -3829,7 +3832,6 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                 reader_set_source_target(&reader_state, source_target);
                                 reader_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
-                                ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_EMPHASIS_MS, 80);
                             } else if (reader_view_load(ctx, body_font, target, font_size,
                                                         current_layout.reader_content_w,
                                                         current_layout.reader_content_h, 0,
@@ -3837,7 +3839,6 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                     reader_set_source_target(&reader_state, source_target);
                                 reader_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
-                                ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_EMPHASIS_MS, 80);
                             } else {
                                 /* 无法打开下一章 */
                                 snprintf(shelf_status, sizeof(shelf_status),
@@ -3863,7 +3864,6 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                 reader_state.current_page = new_total_pages > 0 ? new_total_pages - 1 : 0;
                                 reader_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
-                                ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_EMPHASIS_MS, 80);
                             } else if (reader_view_load(ctx, body_font, target, font_size,
                                                          current_layout.reader_content_w,
                                                          current_layout.reader_content_h, 0,
@@ -3873,7 +3873,6 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                 reader_state.current_page = new_total_pages > 0 ? new_total_pages - 1 : 0;
                                 reader_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
-                                ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_EMPHASIS_MS, 80);
                             } else {
                                 /* 无法打开上一章 */
                                 snprintf(shelf_status, sizeof(shelf_status),
@@ -4250,6 +4249,14 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                 !toast_visible) {
                 should_render = 0;
             }
+            if (view == VIEW_SHELF &&
+                !render_requested &&
+                !motion_state.view_fade_active &&
+                fabsf(motion_state.shelf_selected_visual - (float)selected) < 0.001f &&
+                !toast_visible &&
+                exit_confirm_until <= now) {
+                should_render = 0;
+            }
 
             if (should_render) {
                 SDL_SetRenderTarget(renderer, scene_texture);
@@ -4334,24 +4341,50 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                     shelf_cover_download_thread_handle ||
                     progress_report_thread_handle ||
                     chapter_prefetch_cache_has_running_work(&chapter_prefetch_cache);
-                int reader_idle = view == VIEW_READER &&
-                                  !reader_input_seen &&
-                                  !render_requested;
-                int wait_timeout_ms;
+                int wait_timeout_ms = 0;
                 SDL_Event waited_event;
 
-                if (reader_idle) {
-                    wait_timeout_ms = background_busy ? 50 : 250;
-                } else if (!motion_state.view_fade_active &&
-                           poor_network_toast_until <= now) {
-                    wait_timeout_ms = background_busy ? 33 : 100;
-                } else {
+                if (motion_state.view_fade_active || poor_network_toast_until > now) {
                     wait_timeout_ms = 0;
-                }
+                } else {
+                    Uint32 next_deadline = now + 5000;
 
-                if (wait_timeout_ms > 0 && ms_until_next_minute > 0 &&
-                    ms_until_next_minute < wait_timeout_ms) {
-                    wait_timeout_ms = ms_until_next_minute;
+                    if (ms_until_next_minute > 0 &&
+                        now + (Uint32)ms_until_next_minute < next_deadline) {
+                        next_deadline = now + (Uint32)ms_until_next_minute;
+                    }
+                    if (battery_state.next_poll_tick > now &&
+                        battery_state.next_poll_tick < next_deadline) {
+                        next_deadline = battery_state.next_poll_tick;
+                    }
+                    if (view == VIEW_READER &&
+                        reader_state.progress_report_due_tick > now &&
+                        reader_state.progress_report_due_tick < next_deadline) {
+                        next_deadline = reader_state.progress_report_due_tick;
+                    }
+                    if (haptic_state.stop_tick > 0 &&
+                        haptic_state.stop_tick < next_deadline) {
+                        next_deadline = haptic_state.stop_tick;
+                    }
+                    if (reader_exit_confirm_until > now &&
+                        reader_exit_confirm_until < next_deadline) {
+                        next_deadline = reader_exit_confirm_until;
+                    }
+                    if (exit_confirm_until > now &&
+                        exit_confirm_until < next_deadline) {
+                        next_deadline = exit_confirm_until;
+                    }
+                    if (background_busy) {
+                        Uint32 bg_poll = now + 100;
+                        if (bg_poll < next_deadline) {
+                            next_deadline = bg_poll;
+                        }
+                    }
+
+                    wait_timeout_ms = (int)(next_deadline - now);
+                    if (wait_timeout_ms < 1) {
+                        wait_timeout_ms = 1;
+                    }
                 }
 
                 if (wait_timeout_ms > 0 &&

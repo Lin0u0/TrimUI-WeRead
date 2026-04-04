@@ -107,11 +107,17 @@ void ui_platform_shutdown_haptics(UiHapticState *state) {
     state->available = 0;
     state->value_path[0] = '\0';
     state->next_allowed_tick = 0;
+    state->stop_tick = 0;
 }
 
 void ui_platform_haptic_poll(UiHapticState *state, Uint32 now) {
-    (void)state;
-    (void)now;
+    if (!state || !state->available || state->stop_tick == 0) {
+        return;
+    }
+    if ((Sint32)(now - state->stop_tick) >= 0) {
+        (void)ui_haptic_write_value(state, "0");
+        state->stop_tick = 0;
+    }
 }
 
 void ui_platform_haptic_pulse(UiHapticState *state, Uint32 duration_ms, Uint32 cooldown_ms) {
@@ -126,23 +132,23 @@ void ui_platform_haptic_pulse(UiHapticState *state, Uint32 duration_ms, Uint32 c
         return;
     }
 
+    if (state->stop_tick > 0 && (Sint32)(now - state->stop_tick) < 0) {
+        Uint32 new_stop = now + duration_ms;
+        if ((Sint32)(new_stop - state->stop_tick) > 0) {
+            state->stop_tick = new_stop;
+        }
+        state->next_allowed_tick = state->stop_tick + cooldown_ms;
+        return;
+    }
+
     if (ui_haptic_write_value(state, "1") != 0) {
         fprintf(stderr, "Haptics: failed to write 1 to %s: %s\n",
                 state->value_path, strerror(errno));
         return;
     }
 
-    if (duration_ms > 0) {
-        usleep((useconds_t)duration_ms * 1000U);
-    }
-
-    if (ui_haptic_write_value(state, "0") != 0) {
-        fprintf(stderr, "Haptics: failed to write 0 to %s: %s\n",
-                state->value_path, strerror(errno));
-        return;
-    }
-
-    state->next_allowed_tick = now + cooldown_ms;
+    state->stop_tick = now + duration_ms;
+    state->next_allowed_tick = state->stop_tick + cooldown_ms;
 }
 
 Uint32 ui_frame_interval_ms(UiView view, const UiMotionState *motion_state,
@@ -167,7 +173,7 @@ Uint32 ui_frame_interval_ms(UiView view, const UiMotionState *motion_state,
         if (animated) {
             return UI_FRAME_INTERVAL_ACTIVE_MS;
         }
-        return UI_FRAME_INTERVAL_READER_IDLE_MS;
+        return 0;
     }
     return 0;
 }
