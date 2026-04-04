@@ -116,6 +116,7 @@ typedef struct {
 
 typedef struct {
     ChapterPrefetchSlot slots[10];
+    int last_update_index;
 } ChapterPrefetchCache;
 
 typedef struct {
@@ -1177,28 +1178,44 @@ static void shelf_cover_download_stop(ShelfCoverDownloadState *state,
     shelf_cover_download_state_reset(state);
 }
 
-static void draw_qr(SDL_Renderer *renderer, const char *path, const SDL_Rect *slot) {
-    SDL_Surface *surface = IMG_Load(path);
+static void draw_qr(SDL_Renderer *renderer, const char *path, const SDL_Rect *slot,
+                    SDL_Texture **cached_texture, int *cached_w, int *cached_h) {
     SDL_Texture *texture;
+    int tex_w, tex_h;
     SDL_Rect dst;
     int max_w;
     int max_h;
     float scale;
 
-    if (!surface) {
-        return;
-    }
-    texture = SDL_CreateTextureFromSurface(renderer, surface);
-    if (!texture) {
+    if (cached_texture && *cached_texture) {
+        texture = *cached_texture;
+        tex_w = cached_w ? *cached_w : 0;
+        tex_h = cached_h ? *cached_h : 0;
+    } else {
+        SDL_Surface *surface = IMG_Load(path);
+        if (!surface) {
+            return;
+        }
+        texture = SDL_CreateTextureFromSurface(renderer, surface);
+        tex_w = surface->w;
+        tex_h = surface->h;
         SDL_FreeSurface(surface);
-        return;
+        if (!texture) {
+            return;
+        }
+        if (cached_texture) {
+            *cached_texture = texture;
+            if (cached_w) *cached_w = tex_w;
+            if (cached_h) *cached_h = tex_h;
+        }
     }
-    max_w = slot ? slot->w - 24 : surface->w * 2;
-    max_h = slot ? slot->h - 24 : surface->h * 2;
+
+    max_w = slot ? slot->w - 24 : tex_w * 2;
+    max_h = slot ? slot->h - 24 : tex_h * 2;
     scale = 2.0f;
-    if (surface->w > 0 && surface->h > 0) {
-        float scale_w = (float)max_w / (float)surface->w;
-        float scale_h = (float)max_h / (float)surface->h;
+    if (tex_w > 0 && tex_h > 0) {
+        float scale_w = (float)max_w / (float)tex_w;
+        float scale_h = (float)max_h / (float)tex_h;
         if (scale_w < scale) {
             scale = scale_w;
         }
@@ -1209,8 +1226,8 @@ static void draw_qr(SDL_Renderer *renderer, const char *path, const SDL_Rect *sl
     if (scale <= 0.0f) {
         scale = 1.0f;
     }
-    dst.w = (int)(surface->w * scale);
-    dst.h = (int)(surface->h * scale);
+    dst.w = (int)(tex_w * scale);
+    dst.h = (int)(tex_h * scale);
     if (slot) {
         dst.x = slot->x + (slot->w - dst.w) / 2;
         dst.y = slot->y + (slot->h - dst.h) / 2;
@@ -1219,8 +1236,9 @@ static void draw_qr(SDL_Renderer *renderer, const char *path, const SDL_Rect *sl
         dst.y = 180;
     }
     SDL_RenderCopy(renderer, texture, NULL, &dst);
-    SDL_DestroyTexture(texture);
-    SDL_FreeSurface(surface);
+    if (!cached_texture) {
+        SDL_DestroyTexture(texture);
+    }
 }
 
 static void render_header_status(SDL_Renderer *renderer, TTF_Font *body_font,
@@ -1288,7 +1306,8 @@ static void render_confirm_hint(SDL_Renderer *renderer, TTF_Font *body_font,
 
 static void render_login(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
                          AuthSession *session, const char *status, const char *battery_text,
-                         const UiLayout *layout) {
+                         const UiLayout *layout,
+                         SDL_Texture **qr_texture, int *qr_w, int *qr_h) {
     const UiTheme *theme = ui_current_theme();
     SDL_Color ink = theme->ink;
     SDL_Color muted = theme->muted;
@@ -1358,7 +1377,7 @@ static void render_login(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
     render_header_status(renderer, body_font, battery_text, layout);
 
     if (session && session->qr_png_path[0]) {
-        draw_qr(renderer, session->qr_png_path, &qr_slot);
+        draw_qr(renderer, session->qr_png_path, &qr_slot, qr_texture, qr_w, qr_h);
     }
 
     if (body_font) {
@@ -2674,6 +2693,10 @@ static void chapter_prefetch_cache_update(ApiContext *ctx, ChapterPrefetchCache 
     }
 
     current_index = reader_current_catalog_index(reader_state);
+    if (current_index >= 0 && current_index == cache->last_update_index) {
+        return;
+    }
+    cache->last_update_index = current_index;
     if (reader_state->doc.catalog_items && reader_state->doc.catalog_count > 0 && current_index >= 0) {
         for (int distance = 1; distance <= UI_CHAPTER_PREFETCH_RADIUS; distance++) {
             int indexes[2] = { current_index - distance, current_index + distance };
@@ -2723,6 +2746,7 @@ static void chapter_prefetch_cache_reset(ChapterPrefetchCache *cache) {
     for (int i = 0; i < (int)(sizeof(cache->slots) / sizeof(cache->slots[0])); i++) {
         chapter_prefetch_slot_reset(&cache->slots[i]);
     }
+    cache->last_update_index = -1;
 }
 
 static int chapter_prefetch_cache_has_running_work(const ChapterPrefetchCache *cache) {
@@ -3373,6 +3397,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     SDL_Thread *login_poll_thread_handle = NULL;
     SDL_Thread *progress_report_thread_handle = NULL;
     SDL_Texture *scene_texture = NULL;
+    SDL_Texture *qr_texture = NULL;
+    int qr_tex_w = 0, qr_tex_h = 0;
     int login_active = 0;
     char status[256] = "";
     char shelf_status[256] = "";
@@ -3697,6 +3723,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                     if ((ui_event_is_confirm(&event, tg5040_input) ||
                          ui_event_is_keydown(&event, SDLK_l)) &&
                         !login_start.running && !login_active) {
+                        if (qr_texture) { SDL_DestroyTexture(qr_texture); qr_texture = NULL; }
                         begin_login_flow(ctx, &login_start, &login_thread, &view,
                                          status, sizeof(status), qr_path);
                         ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 60);
@@ -4017,12 +4044,14 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                    &progress_report, &progress_report_thread_handle);
             chapter_prefetch_cache_poll(&chapter_prefetch_cache);
             chapter_prefetch_cache_update(ctx, &chapter_prefetch_cache, &reader_state);
-        } else {
+        } else if (chapter_prefetch_cache_has_running_work(&chapter_prefetch_cache)) {
             chapter_prefetch_cache_poll(&chapter_prefetch_cache);
         }
 
-        shelf_cover_download_poll(&shelf_covers, &shelf_cover_download,
-                                  &shelf_cover_download_thread_handle);
+        if (shelf_cover_download_thread_handle) {
+            shelf_cover_download_poll(&shelf_covers, &shelf_cover_download,
+                                      &shelf_cover_download_thread_handle);
+        }
         if (view == VIEW_SHELF) {
             shelf_cover_download_maybe_start(ctx, &shelf_covers, &shelf_cover_download,
                                              &shelf_cover_download_thread_handle, selected);
@@ -4059,6 +4088,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                 view = VIEW_LOGIN;
                 /* 正在生成二维码... */
                 snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE7\x94\x9F\xE6\x88\x90\xE4\xBA\x8C\xE7\xBB\xB4\xE7\xA0\x81...");
+                if (qr_texture) { SDL_DestroyTexture(qr_texture); qr_texture = NULL; }
                 begin_login_flow(ctx, &login_start, &login_thread, &view, status, sizeof(status), qr_path);
             } else if (!shelf_nuxt && view != VIEW_READER && view != VIEW_LOGIN) {
                 /* 网络错误，按 A 重试 */
@@ -4263,7 +4293,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
 
                 if (view == VIEW_LOGIN) {
                     render_login(renderer, title_font, body_font, &session, status,
-                                 battery_state.text, &current_layout);
+                                 battery_state.text, &current_layout,
+                                 &qr_texture, &qr_tex_w, &qr_tex_h);
                 } else if (view == VIEW_READER) {
                     render_reader(renderer, title_font, body_font, &reader_state,
                                   battery_state.text, &current_layout);
@@ -4434,6 +4465,9 @@ cleanup:
     }
     if (title_font) {
         TTF_CloseFont(title_font);
+    }
+    if (qr_texture) {
+        SDL_DestroyTexture(qr_texture);
     }
     if (scene_texture) {
         SDL_DestroyTexture(scene_texture);
