@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.5
+
+`0.1.5` focuses on reducing CPU usage and device temperature during long reading sessions.
+
+### Highlights
+
+- Switched the idle reader loop from fixed-interval polling to event-driven sleep, reducing wakeups from ~5.5/sec to near zero
+- Replaced blocking haptic pulses (22-78ms usleep) with an async GPIO model that no longer stalls the render loop
+- Added deadline-based sleep that calculates the precise next wake time from battery poll, clock tick, progress report, and haptic deadlines
+- Extended render skipping to the shelf view so static screens no longer redraw every frame
+- Cached the QR login texture instead of reloading the PNG from disk on every frame
+- Guarded chapter prefetch updates behind a catalog-index check to skip redundant work
+- Added active-work checks before polling prefetch and cover download threads
+
+### Notes
+
+The most common state for an ebook reader is sitting on a page of text with no user input. Before this release the app woke the CPU ~5.5 times per second in that state; after these changes it wakes roughly once every 30 seconds (for the battery poll). This should noticeably reduce device warmth and improve battery life during extended reading.
+
 ## 0.1.4
 
 `0.1.4` improves reading flow responsiveness and prepares the codebase for faster iteration.
