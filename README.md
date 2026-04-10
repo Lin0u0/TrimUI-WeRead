@@ -58,7 +58,8 @@ On first launch, open the login flow and scan the generated QR code with WeRead 
 Runtime data is stored per platform:
 
 - NextUI: `$SHARED_USERDATA_PATH/WeRead`
-- Stock OS / CrossMix-OS: `SDCARD/Data/WeRead`
+- Stock OS: `SDCARD/Data/WeRead`
+- CrossMix-OS: `/mnt/SDCARD/Data/WeRead`
 
 This data includes:
 
@@ -68,6 +69,8 @@ This data includes:
 - `state/reader-positions.json`
 - `state/preferences.json`
 - launch logs on TrimUI builds
+
+These filenames are part of the current runtime contract and should stay stable unless compatibility work is added on purpose.
 
 ## Controls
 
@@ -107,6 +110,25 @@ Notes:
 - With no explicit command, the program starts `ui` when a font is available.
 - Without SDL UI support, the default falls back to `shelf`.
 - `shelf-cache` prints the cached shelf when network access is unavailable.
+
+## Maintainer Map
+
+The repo keeps a flat `src/` layout, so ownership is easier to follow by file family than by folder depth:
+
+- `src/ui.c`: SDL scheduler, render composition, and view switching
+- `src/ui_flow_startup_login.c`, `src/ui_flow_shelf.c`, `src/ui_flow_reader.c`: UI-side flow ownership
+- `src/ui_reader_view.c`: reader-view pagination, page offsets, local-position, and progress helpers
+- `src/parser_common.c`, `src/parser_internal.h`: shared parser primitives
+- `src/state.c`, `src/state.h`: persisted runtime state
+- `Makefile` and `packaging/`: build outputs and launcher packaging
+
+The full maintainer-facing ownership and protected-name reference is in [MAINTAINER_BOUNDARIES.md](MAINTAINER_BOUNDARIES.md).
+
+## Maintainer Docs
+
+- [MAINTAINER_GUIDE.md](MAINTAINER_GUIDE.md): main internal handoff entrypoint for onboarding, common maintenance tasks, verification flow, and frequent failure paths.
+- [MAINTAINER_BOUNDARIES.md](MAINTAINER_BOUNDARIES.md): source ownership map and protected runtime-contract reference.
+- [BUILD.md](BUILD.md): build, package, artifact, and release-surface reference.
 
 ## Building from Source
 
@@ -153,6 +175,23 @@ Outputs:
 - `dist/WeRead-crossmix.tar.gz`
 
 More build details are in [BUILD.md](BUILD.md).
+
+## Verification
+
+Phase 03 separates required host checks from broader confirmation work.
+
+Required host gates:
+
+- `make test-host`
+- `make test-smoke`
+
+Advisory checks:
+
+- `make tg5040`
+- `make nextui-release stock-release crossmix-release`
+- Manual tg5040 smoke for login, shelf refresh, reader open/resume, and progress sync
+
+The smoke script intentionally stays thin and host-native. It verifies stable CLI-visible paths like `--help`, cached shelf output, and resume command behavior without turning device validation into automation in this phase.
 
 ## Known Scope
 

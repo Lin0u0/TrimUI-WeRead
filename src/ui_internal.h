@@ -14,6 +14,7 @@
 #include <SDL.h>
 #include <SDL_ttf.h>
 #include <stdint.h>
+#include "auth.h"
 #include "reader.h"
 
 /* ====================== Type Definitions ====================== */
@@ -88,6 +89,61 @@ typedef struct {
 } UiBatteryState;
 
 typedef struct {
+    char data_dir[512];
+    char ca_file[512];
+    char qr_path[1024];
+    AuthSession session;
+    int running;
+    int success;
+    int failed;
+} LoginStartState;
+
+typedef struct {
+    char data_dir[512];
+    char ca_file[512];
+    AuthSession session;
+    int running;
+    int completed;
+    int stop;
+    AuthPollStatus last_status;
+} LoginPollState;
+
+typedef struct {
+    char data_dir[512];
+    char ca_file[512];
+    cJSON *shelf_nuxt;
+    int session_ok;
+    int running;
+    int completed;
+    int poor_network;
+} StartupState;
+
+typedef struct {
+    char *book_id;
+    char *cover_url;
+    char cache_path[1024];
+    SDL_Texture *texture;
+    int attempted;
+    int download_failed;
+} ShelfCoverEntry;
+
+typedef struct {
+    ShelfCoverEntry *entries;
+    int count;
+} ShelfCoverCache;
+
+typedef struct {
+    char data_dir[512];
+    char ca_file[512];
+    char cover_url[2048];
+    char cache_path[1024];
+    int running;
+    int ready;
+    int failed;
+    int entry_index;
+} ShelfCoverDownloadState;
+
+typedef struct {
     ReaderDocument doc;
     char source_target[2048];
     char **lines;
@@ -110,6 +166,58 @@ typedef struct {
     int progress_initial_report_pending;
     int progress_session_expired;
 } ReaderViewState;
+
+typedef struct {
+    char data_dir[512];
+    char ca_file[512];
+    char source_target[2048];
+    char book_id[256];
+    int font_size;
+    int content_font_size;
+    int initial_page;
+    int initial_offset;
+    int honor_saved_position;
+    int running;
+    int ready;
+    int failed;
+    int poor_network;
+    ReaderDocument doc;
+} ReaderOpenState;
+
+typedef struct {
+    char data_dir[512];
+    char ca_file[512];
+    ReaderDocument doc;
+    int current_page;
+    int total_pages;
+    int chapter_offset;
+    int reading_seconds;
+    int compute_progress;
+    char page_summary[128];
+    int running;
+    int result;
+} ProgressReportState;
+
+typedef struct {
+    char data_dir[512];
+    char ca_file[512];
+    char target[2048];
+    int font_size;
+    int running;
+    int ready;
+    int failed;
+    ReaderDocument doc;
+} ChapterPrefetchState;
+
+typedef struct {
+    ChapterPrefetchState state;
+    SDL_Thread *thread;
+} ChapterPrefetchSlot;
+
+typedef struct {
+    ChapterPrefetchSlot slots[10];
+    int last_update_index;
+} ChapterPrefetchCache;
 
 /* ====================== Constants ====================== */
 
@@ -245,6 +353,119 @@ const char *skip_line_start_spacing(const char *text, const char *end);
 
 int ui_recreate_scene_texture(SDL_Renderer *renderer, SDL_Texture **scene_texture,
                               const UiLayout *layout);
+
+/* ====================== ui_reader_view.c ====================== */
+
+/*
+ * Reader-view helpers are an internal UI sub-boundary shared by ui.c and
+ * ui_flow_reader.c. They are not part of ui.h and must stay within the ui_*
+ * subsystem even when ownership moves out of ui.c.
+ */
+void ui_reader_view_free(ReaderViewState *state);
+int ui_reader_view_total_pages(ReaderViewState *state);
+int ui_reader_view_find_page_for_offset(const ReaderViewState *state, int target_offset);
+int ui_reader_view_adopt_document(TTF_Font *font, ReaderDocument *doc,
+                                  int content_width, int content_height,
+                                  int honor_saved_position, ReaderViewState *state);
+int ui_reader_view_load(ApiContext *ctx, TTF_Font *font, const char *target,
+                        int font_size, int content_width, int content_height,
+                        int honor_saved_position, ReaderViewState *state);
+int ui_reader_view_reset_content_font(TTF_Font *fallback_font, ReaderViewState *state);
+int ui_reader_view_rewrap(TTF_Font *font, int content_width, int content_height,
+                          ReaderViewState *state);
+void ui_reader_view_set_source_target(ReaderViewState *state, const char *source_target);
+void ui_reader_view_clamp_current_page(ReaderViewState *state);
+void ui_reader_view_save_local_position(ApiContext *ctx, ReaderViewState *state);
+int ui_reader_view_current_page_offset(const ReaderViewState *state);
+int ui_reader_view_current_catalog_index(ReaderViewState *state);
+void ui_reader_view_build_page_summary(ReaderViewState *state, char *out, size_t out_size);
+void ui_reader_view_note_progress_activity(ReaderViewState *state, Uint32 now);
+void ui_reader_view_flush_progress_blocking(ApiContext *ctx, ReaderViewState *state,
+                                            int compute_progress);
+void ui_reader_view_open_catalog(ApiContext *ctx, ReaderViewState *state,
+                                 char *status, size_t status_size);
+int ui_reader_view_expand_catalog_for_selection(ApiContext *ctx, ReaderViewState *state,
+                                                int direction, char *status,
+                                                size_t status_size);
+
+/* ====================== ui_flow_startup_login.c ====================== */
+
+void ui_startup_login_startup_state_reset(StartupState *state);
+void ui_startup_login_begin_startup_refresh(ApiContext *ctx, StartupState *startup_state,
+                                            SDL_Thread **startup_thread_handle);
+int ui_startup_login_finish_startup(SDL_Thread **startup_thread_handle,
+                                    StartupState *startup_state);
+void ui_startup_login_begin_login_flow(ApiContext *ctx, LoginStartState *login_start,
+                                       SDL_Thread **login_thread, UiView *view,
+                                       char *status, size_t status_size, const char *qr_path);
+int ui_startup_login_finish_login_start(ApiContext *ctx, LoginStartState *login_start,
+                                        SDL_Thread **login_thread, LoginPollState *login_poll,
+                                        SDL_Thread **login_poll_thread_handle,
+                                        AuthSession *session, Uint32 *last_poll,
+                                        int *login_active, char *status,
+                                        size_t status_size, int *render_requested);
+int ui_startup_login_poll_login(LoginPollState *login_poll,
+                                SDL_Thread **login_poll_thread_handle, Uint32 *last_poll,
+                                char *status, size_t status_size, int *render_requested);
+void ui_startup_login_shutdown(LoginPollState *login_poll, SDL_Thread **login_thread,
+                               SDL_Thread **startup_thread_handle,
+                               SDL_Thread **login_poll_thread_handle);
+
+/* ====================== ui_flow_shelf.c ====================== */
+
+void ui_shelf_flow_cover_download_state_reset(ShelfCoverDownloadState *state);
+void ui_shelf_flow_cover_download_maybe_start(ApiContext *ctx, ShelfCoverCache *cache,
+                                              ShelfCoverDownloadState *state,
+                                              SDL_Thread **thread_handle, int selected);
+void ui_shelf_flow_cover_download_poll(ShelfCoverCache *cache,
+                                       ShelfCoverDownloadState *state,
+                                       SDL_Thread **thread_handle);
+void ui_shelf_flow_cover_download_stop(ShelfCoverDownloadState *state,
+                                       SDL_Thread **thread_handle);
+int ui_shelf_flow_prepare_resume(ApiContext *ctx, char *target, size_t target_size,
+                                 int *font_size, char *loading_title,
+                                 size_t loading_title_size, char *status,
+                                 size_t status_size);
+int ui_shelf_flow_prepare_selected_open(cJSON *shelf_nuxt, int selected,
+                                        char *target, size_t target_size,
+                                        char *book_id, size_t book_id_size,
+                                        char *loading_title, size_t loading_title_size,
+                                        char *status, size_t status_size,
+                                        char *shelf_status,
+                                        size_t shelf_status_size);
+
+/* ====================== ui_flow_reader.c ====================== */
+
+void ui_reader_flow_progress_report_state_reset(ProgressReportState *state);
+void ui_reader_flow_reader_open_state_reset(ReaderOpenState *state);
+void ui_reader_flow_chapter_prefetch_cache_reset(ChapterPrefetchCache *cache);
+int ui_reader_flow_chapter_prefetch_has_running_work(const ChapterPrefetchCache *cache);
+int ui_reader_flow_chapter_prefetch_cache_adopt(ChapterPrefetchCache *cache,
+                                                const char *target, TTF_Font *body_font,
+                                                ReaderViewState *reader_state,
+                                                const UiLayout *current_layout);
+void ui_reader_flow_tick_reader(ApiContext *ctx, ReaderViewState *reader_state,
+                                ProgressReportState *progress_report,
+                                SDL_Thread **progress_report_thread_handle,
+                                ChapterPrefetchCache *chapter_prefetch_cache);
+void ui_reader_flow_poll_background(ChapterPrefetchCache *chapter_prefetch_cache);
+void ui_reader_flow_begin_reader_open(ApiContext *ctx, ReaderOpenState *reader_open,
+                                      SDL_Thread **reader_open_thread_handle,
+                                      const char *source_target, const char *book_id,
+                                      int font_size);
+int ui_reader_flow_finish_open(ApiContext *ctx, TTF_Font *body_font,
+                               ReaderOpenState *reader_open,
+                               SDL_Thread **reader_open_thread_handle,
+                               ReaderViewState *reader_state, UiView *view,
+                               char *status, size_t status_size,
+                               char *shelf_status, size_t shelf_status_size,
+                               Uint32 *poor_network_toast_until,
+                               const UiLayout *current_layout, int shelf_available);
+void ui_reader_flow_shutdown(ReaderOpenState *reader_open,
+                             SDL_Thread **reader_open_thread_handle,
+                             ProgressReportState *progress_report,
+                             SDL_Thread **progress_report_thread_handle,
+                             ChapterPrefetchCache *chapter_prefetch_cache);
 
 /* ====================== Utility functions ====================== */
 

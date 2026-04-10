@@ -1,0 +1,106 @@
+{
+  "resumeCases": [
+    {
+      "name": "missing-last-reader",
+      "seedLastReader": false,
+      "expectedOk": 0
+    },
+    {
+      "name": "saved-last-reader",
+      "seedLastReader": true,
+      "lastReader": {
+        "target": "https://weread.qq.com/web/reader/book-1-chapter-5",
+        "fontSize": 5,
+        "contentFontSize": 40
+      },
+      "expectedOk": 1,
+      "expectedTarget": "https://weread.qq.com/web/reader/book-1-chapter-5",
+      "expectedFontSize": 5,
+      "expectedLoadingTitle": "正在打开",
+      "expectedStatus": "正在恢复阅读位置..."
+    }
+  ],
+  "selectedOpenCases": [
+    {
+      "name": "selected-open-success",
+      "selected": 0,
+      "shelfNuxt": {
+        "state": {
+          "shelf": {
+            "books": [
+              {
+                "bookId": "book-1",
+                "title": "Fixture Book"
+              },
+              {
+                "title": "Missing Reader Target"
+              }
+            ],
+            "bookReaderUrls": [
+              {
+                "param": "https://weread.qq.com/web/reader/book-1-chapter-1"
+              },
+              {}
+            ]
+          }
+        }
+      },
+      "expectedOk": 1,
+      "expectedTarget": "https://weread.qq.com/web/reader/book-1-chapter-1",
+      "expectedBookId": "book-1",
+      "expectedLoadingTitle": "正在打开",
+      "expectedStatus": "正在加载章节..."
+    },
+    {
+      "name": "selected-open-invalid-index",
+      "selected": 4,
+      "shelfNuxt": {
+        "state": {
+          "shelf": {
+            "books": [
+              {
+                "bookId": "book-1",
+                "title": "Fixture Book"
+              }
+            ],
+            "bookReaderUrls": [
+              {
+                "param": "https://weread.qq.com/web/reader/book-1-chapter-1"
+              }
+            ]
+          }
+        }
+      },
+      "expectedOk": 0,
+      "expectedShelfStatus": "无法打开所选书籍"
+    },
+    {
+      "name": "selected-open-missing-target",
+      "selected": 1,
+      "shelfNuxt": {
+        "state": {
+          "shelf": {
+            "books": [
+              {
+                "bookId": "book-1",
+                "title": "Fixture Book"
+              },
+              {
+                "bookId": "book-2",
+                "title": "Missing Reader Target"
+              }
+            ],
+            "bookReaderUrls": [
+              {
+                "param": "https://weread.qq.com/web/reader/book-1-chapter-1"
+              },
+              {}
+            ]
+          }
+        }
+      },
+      "expectedOk": 0,
+      "expectedShelfStatus": "无法打开所选书籍"
+    }
+  ]
+}

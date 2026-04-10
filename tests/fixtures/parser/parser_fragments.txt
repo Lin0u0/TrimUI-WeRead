@@ -1,0 +1,7 @@
+[skip_ws]
+ 	
+reader-start
+[matching_pair]
+{title:"brace } stays",nested:{count:2},items:[1,2,3]}
+[dup_range]
+chapterUid:aliasUid, title:aliasTitle

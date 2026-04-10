@@ -289,10 +289,14 @@ char *api_escape(ApiContext *ctx, const char *value) {
 }
 
 cJSON *api_get_json(ApiContext *ctx, const char *url) {
+    return api_get_json_timeout(ctx, url, 30L);
+}
+
+cJSON *api_get_json_timeout(ApiContext *ctx, const char *url, long timeout_seconds) {
     Buffer buf;
     cJSON *json;
 
-    if (api_get(ctx, url, &buf) != 0) {
+    if (api_get_ua_internal(ctx, url, KINDLE_USER_AGENT, &buf, timeout_seconds) != 0) {
         return NULL;
     }
     json = cJSON_Parse(buf.data);

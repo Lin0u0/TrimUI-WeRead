@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include "preferences_state.h"
 #include "state.h"
 
 int ui_tg5040_scale_brightness(int level) {
@@ -233,7 +234,7 @@ int ui_platform_step_brightness(ApiContext *ctx, int tg5040_input, int delta,
 
     *brightness_level = next_level;
     if (ctx) {
-        state_save_brightness_level(ctx, next_level);
+        preferences_state_save_brightness_level(ctx, next_level);
     }
     return 0;
 }

@@ -9,59 +9,7 @@
 #include <string.h>
 #include "api.h"
 #include "json.h"
-
-/* ====================== Basic String Utilities ====================== */
-
-static const char *skip_ws(const char *p, const char *end) {
-    while (p < end && isspace((unsigned char)*p)) {
-        p++;
-    }
-    return p;
-}
-
-static char *dup_range(const char *start, const char *end) {
-    size_t len = (size_t)(end - start);
-    char *copy = malloc(len + 1);
-    if (!copy) {
-        return NULL;
-    }
-    memcpy(copy, start, len);
-    copy[len] = '\0';
-    return copy;
-}
-
-static const char *find_matching(const char *start, const char *end, char open_ch, char close_ch) {
-    int depth = 0;
-    int in_string = 0;
-    char string_char = 0;
-
-    for (const char *p = start; p < end; p++) {
-        char c = *p;
-        if (in_string) {
-            if (c == '\\' && p + 1 < end) {
-                p++;
-            } else if (c == string_char) {
-                in_string = 0;
-            }
-            continue;
-        }
-        if (c == '"' || c == '\'') {
-            in_string = 1;
-            string_char = c;
-            continue;
-        }
-        if (c == open_ch) {
-            depth++;
-        } else if (c == close_ch) {
-            depth--;
-            if (depth == 0) {
-                return p;
-            }
-        }
-    }
-
-    return NULL;
-}
+#include "parser_internal.h"
 
 static int append_str(char **out, size_t *len, size_t *cap, const char *text, size_t text_len) {
     size_t needed = *len + text_len + 1;
@@ -84,7 +32,7 @@ static int append_str(char **out, size_t *len, size_t *cap, const char *text, si
 /* ====================== JS Literal Parsing ====================== */
 
 static int parse_js_literal(const char **cursor, const char *end, char **out_literal) {
-    const char *p = skip_ws(*cursor, end);
+    const char *p = parser_skip_ws(*cursor, end);
     const char *start;
 
     if (p >= end) {
@@ -101,7 +49,7 @@ static int parse_js_literal(const char **cursor, const char *end, char **out_lit
             }
             if (*p == quote) {
                 p++;
-                *out_literal = dup_range(start, p);
+                *out_literal = parser_dup_range(start, p);
                 *cursor = p;
                 return *out_literal ? 0 : -1;
             }
@@ -126,12 +74,12 @@ static int parse_js_literal(const char **cursor, const char *end, char **out_lit
         return *out_literal ? 0 : -1;
     }
     if (strncmp(p, "true", 4) == 0 || strncmp(p, "null", 4) == 0) {
-        *out_literal = dup_range(p, p + 4);
+        *out_literal = parser_dup_range(p, p + 4);
         *cursor = p + 4;
         return *out_literal ? 0 : -1;
     }
     if (strncmp(p, "false", 5) == 0) {
-        *out_literal = dup_range(p, p + 5);
+        *out_literal = parser_dup_range(p, p + 5);
         *cursor = p + 5;
         return *out_literal ? 0 : -1;
     }
@@ -148,7 +96,7 @@ static int parse_js_literal(const char **cursor, const char *end, char **out_lit
         return -1;
     }
     if (*p == '{') {
-        const char *close = find_matching(p, end, '{', '}');
+        const char *close = parser_find_matching_pair(p, end, '{', '}');
         if (!close) {
             return -1;
         }
@@ -157,7 +105,7 @@ static int parse_js_literal(const char **cursor, const char *end, char **out_lit
         return *out_literal ? 0 : -1;
     }
     if (*p == '[') {
-        const char *close = find_matching(p, end, '[', ']');
+        const char *close = parser_find_matching_pair(p, end, '[', ']');
         if (!close) {
             return -1;
         }
@@ -182,7 +130,7 @@ static int parse_js_literal(const char **cursor, const char *end, char **out_lit
                 p++;
             }
         }
-        *out_literal = dup_range(start, p);
+        *out_literal = parser_dup_range(start, p);
         *cursor = p;
         return *out_literal ? 0 : -1;
     }
@@ -333,7 +281,7 @@ static char *quote_object_keys(const char *text) {
                 ident_len++;
                 lookahead++;
             }
-            lookahead = skip_ws(lookahead, text + strlen(text));
+            lookahead = parser_skip_ws(lookahead, text + strlen(text));
             if (*lookahead == ':') {
                 if (append_str(&out, &len, &cap, "\"", 1) != 0 ||
                     append_str(&out, &len, &cap, start, ident_len) != 0 ||
@@ -467,7 +415,7 @@ cJSON *api_extract_nuxt(const char *html, size_t html_len) {
     }
 
     if (params_end > params_start) {
-        char *params_copy = dup_range(params_start, params_end);
+        char *params_copy = parser_dup_range(params_start, params_end);
         char *cursor = params_copy;
         char *token;
         while ((token = strsep(&cursor, ",")) != NULL) {
@@ -499,32 +447,32 @@ cJSON *api_extract_nuxt(const char *html, size_t html_len) {
     }
     ret += 7;
 
-    obj_start = skip_ws(ret, end);
+    obj_start = parser_skip_ws(ret, end);
     if (obj_start >= end || *obj_start != '{') {
         fprintf(stderr, "Expected object after return\n");
         goto cleanup;
     }
-    obj_end = find_matching(obj_start, end, '{', '}');
+    obj_end = parser_find_matching_pair(obj_start, end, '{', '}');
     if (!obj_end) {
         fprintf(stderr, "Unbalanced braces in NUXT object\n");
         goto cleanup;
     }
 
-    call_start = skip_ws(obj_end + 1, end);
+    call_start = parser_skip_ws(obj_end + 1, end);
     while (call_start < end && *call_start == '}') {
-        call_start = skip_ws(call_start + 1, end);
+        call_start = parser_skip_ws(call_start + 1, end);
     }
     if (call_start >= end || *call_start != '(') {
         fprintf(stderr, "NUXT invocation arguments not found\n");
         goto cleanup;
     }
-    call_end = find_matching(call_start, end, '(', ')');
+    call_end = parser_find_matching_pair(call_start, end, '(', ')');
     if (!call_end) {
         fprintf(stderr, "Unbalanced NUXT invocation arguments\n");
         goto cleanup;
     }
 
-    object_str = dup_range(obj_start, obj_end + 1);
+    object_str = parser_dup_range(obj_start, obj_end + 1);
     if (!object_str) {
         goto cleanup;
     }
@@ -536,12 +484,12 @@ cJSON *api_extract_nuxt(const char *html, size_t html_len) {
             goto cleanup;
         }
         for (int i = 0; i < param_count; i++) {
-            cursor = skip_ws(cursor, call_end);
+            cursor = parser_skip_ws(cursor, call_end);
             if (cursor >= call_end || parse_js_literal(&cursor, call_end, &values[i]) != 0) {
                 fprintf(stderr, "Failed to parse NUXT invocation argument %d\n", i);
                 goto cleanup;
             }
-            cursor = skip_ws(cursor, call_end);
+            cursor = parser_skip_ws(cursor, call_end);
             if (cursor < call_end && *cursor == ',') {
                 cursor++;
             }

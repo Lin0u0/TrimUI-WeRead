@@ -54,6 +54,7 @@ int api_download(ApiContext *ctx, const char *url, Buffer *buf);
 char *api_build_url(const char *base, const char *path);
 char *api_escape(ApiContext *ctx, const char *value);
 cJSON *api_get_json(ApiContext *ctx, const char *url);
+cJSON *api_get_json_timeout(ApiContext *ctx, const char *url, long timeout_seconds);
 cJSON *api_post_json(ApiContext *ctx, const char *url, const char *body);
 cJSON *api_post_json_timeout(ApiContext *ctx, const char *url, const char *body, long timeout_seconds);
 

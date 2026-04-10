@@ -1,0 +1,132 @@
+{
+  "sessionCases": [
+    {
+      "name": "valid-session",
+      "validateResult": 1,
+      "expectedResult": 1
+    },
+    {
+      "name": "expired-session",
+      "validateResult": 0,
+      "expectedResult": 0,
+      "expectedError": "Session expired or not logged in. Run `weread login` first."
+    },
+    {
+      "name": "network-error",
+      "validateResult": -1,
+      "expectedResult": -1,
+      "expectedError": "Unable to verify login status. Check your network and try again."
+    }
+  ],
+  "openCases": [
+    {
+      "name": "local-position-same-target",
+      "sourceTarget": "https://weread.qq.com/web/reader/book-1-start",
+      "bookIdHint": "book-1",
+      "fontSize": 4,
+      "localPosition": {
+        "bookId": "book-1",
+        "sourceTarget": "https://weread.qq.com/web/reader/book-1-start",
+        "target": "https://weread.qq.com/web/reader/book-1-start",
+        "fontSize": 4,
+        "contentFontSize": 40,
+        "currentPage": 7,
+        "currentOffset": 444
+      },
+      "documents": [
+        {
+          "target": "https://weread.qq.com/web/reader/book-1-start",
+          "bookId": "book-1",
+          "chapterUid": "ch-1",
+          "chapterIdx": 1
+        }
+      ],
+      "expectedDocTarget": "https://weread.qq.com/web/reader/book-1-start",
+      "expectedSourceTarget": "https://weread.qq.com/web/reader/book-1-start",
+      "expectedContentFontSize": 40,
+      "expectedInitialPage": 7,
+      "expectedInitialOffset": 444,
+      "expectedHonorSavedPosition": 0
+    },
+    {
+      "name": "cloud-progress-fallback",
+      "sourceTarget": "https://weread.qq.com/web/reader/book-2-start",
+      "bookIdHint": "book-2",
+      "fontSize": 3,
+      "documents": [
+        {
+          "target": "https://weread.qq.com/web/reader/book-2-start",
+          "bookId": "book-2",
+          "chapterUid": "ch-1",
+          "chapterIdx": 1,
+          "progressChapterUid": "ch-7",
+          "progressChapterIdx": 7,
+          "catalog": [
+            {
+              "target": "https://weread.qq.com/web/reader/book-2-start",
+              "chapterUid": "ch-1",
+              "chapterIdx": 1
+            }
+          ]
+        },
+        {
+          "target": "https://weread.qq.com/web/reader/book-2-chapter-7",
+          "bookId": "book-2",
+          "chapterUid": "ch-7",
+          "chapterIdx": 7,
+          "progressChapterUid": "ch-7",
+          "progressChapterIdx": 7
+        }
+      ],
+      "findChapterTargets": [
+        {
+          "bookId": "book-2",
+          "chapterUid": "ch-7",
+          "chapterIdx": 7,
+          "target": "https://weread.qq.com/web/reader/book-2-chapter-7"
+        }
+      ],
+      "expectedDocTarget": "https://weread.qq.com/web/reader/book-2-chapter-7",
+      "expectedSourceTarget": "https://weread.qq.com/web/reader/book-2-start",
+      "expectedContentFontSize": 36,
+      "expectedInitialPage": 0,
+      "expectedInitialOffset": 0,
+      "expectedHonorSavedPosition": 1
+    },
+    {
+      "name": "saved-position-newer-than-source",
+      "sourceTarget": "https://weread.qq.com/web/reader/book-3-start",
+      "bookIdHint": "book-3",
+      "fontSize": 5,
+      "localPosition": {
+        "bookId": "book-3",
+        "sourceTarget": "https://weread.qq.com/web/reader/book-3-start",
+        "target": "https://weread.qq.com/web/reader/book-3-chapter-5",
+        "fontSize": 5,
+        "contentFontSize": 42,
+        "currentPage": 11,
+        "currentOffset": 901
+      },
+      "documents": [
+        {
+          "target": "https://weread.qq.com/web/reader/book-3-start",
+          "bookId": "book-3",
+          "chapterUid": "ch-2",
+          "chapterIdx": 2
+        },
+        {
+          "target": "https://weread.qq.com/web/reader/book-3-chapter-5",
+          "bookId": "book-3",
+          "chapterUid": "ch-5",
+          "chapterIdx": 5
+        }
+      ],
+      "expectedDocTarget": "https://weread.qq.com/web/reader/book-3-chapter-5",
+      "expectedSourceTarget": "https://weread.qq.com/web/reader/book-3-start",
+      "expectedContentFontSize": 42,
+      "expectedInitialPage": 11,
+      "expectedInitialOffset": 901,
+      "expectedHonorSavedPosition": 0
+    }
+  ]
+}

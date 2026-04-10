@@ -67,7 +67,5 @@ int reader_report_progress(ApiContext *ctx, const ReaderDocument *doc, int curre
 char *reader_find_chapter_target(ApiContext *ctx, const char *book_id,
                                 const char *chapter_uid, int chapter_idx);
 void reader_document_free(ReaderDocument *doc);
-int reader_print(ApiContext *ctx, const char *target, int font_size);
-int reader_resume(ApiContext *ctx);
 
 #endif

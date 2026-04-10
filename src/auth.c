@@ -94,7 +94,7 @@ int auth_start(ApiContext *ctx, AuthSession *session, const char *qr_png_path) {
     snprintf(session->qr_png_path, sizeof(session->qr_png_path), "%s", qr_png_path);
 
     url = api_build_url(WEREAD_API_BASE_URL, "getuid");
-    uid_json = api_get_json(ctx, url);
+    uid_json = api_get_json_timeout(ctx, url, 8L);
     free(url);
     url = NULL;
     if (!uid_json) {
@@ -123,7 +123,7 @@ int auth_start(ApiContext *ctx, AuthSession *session, const char *qr_png_path) {
     }
     snprintf(url, strlen(WEREAD_API_BASE_URL) + strlen("/qrcode?url=") + strlen(escaped) + 1,
              "%s/qrcode?url=%s", WEREAD_API_BASE_URL, escaped);
-    qr_json = api_get_json(ctx, url);
+    qr_json = api_get_json_timeout(ctx, url, 8L);
     if (!qr_json) {
         goto cleanup;
     }

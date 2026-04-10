@@ -19,143 +19,15 @@
 #include <unistd.h>
 #include "auth.h"
 #include "json.h"
+#include "preferences_state.h"
 #include "reader.h"
+#include "reader_state.h"
 #include "shelf.h"
+#include "shelf_state.h"
 #include "state.h"
 
-typedef struct {
-    char data_dir[512];
-    char ca_file[512];
-    char qr_path[1024];
-    AuthSession session;
-    int running;
-    int success;
-    int failed;
-} LoginStartState;
-
-typedef struct {
-    char data_dir[512];
-    char ca_file[512];
-    AuthSession session;
-    int running;
-    int completed;
-    int stop;
-    AuthPollStatus last_status;
-} LoginPollState;
-
-typedef struct {
-    char data_dir[512];
-    char ca_file[512];
-    cJSON *shelf_nuxt;
-    int session_ok;
-    int running;
-    int completed;
-    int poor_network;
-} StartupState;
-
-typedef struct {
-    char data_dir[512];
-    char ca_file[512];
-    char source_target[2048];
-    char book_id[256];
-    int font_size;
-    int content_font_size;
-    int initial_page;
-    int initial_offset;
-    int honor_saved_position;
-    int running;
-    int ready;
-    int failed;
-    int poor_network;
-    ReaderDocument doc;
-} ReaderOpenState;
-
-typedef struct {
-    char data_dir[512];
-    char ca_file[512];
-    ReaderDocument doc;
-    int current_page;
-    int total_pages;
-    int chapter_offset;
-    int reading_seconds;
-    int compute_progress;
-    char page_summary[128];
-    int running;
-    int result;
-} ProgressReportState;
-
-typedef struct {
-    char *book_id;
-    char *cover_url;
-    char cache_path[1024];
-    SDL_Texture *texture;
-    int attempted;
-    int download_failed;
-} ShelfCoverEntry;
-
-typedef struct {
-    ShelfCoverEntry *entries;
-    int count;
-} ShelfCoverCache;
-
-typedef struct {
-    char data_dir[512];
-    char ca_file[512];
-    char target[2048];
-    int font_size;
-    int running;
-    int ready;
-    int failed;
-    ReaderDocument doc;
-} ChapterPrefetchState;
-
-typedef struct {
-    ChapterPrefetchState state;
-    SDL_Thread *thread;
-} ChapterPrefetchSlot;
-
-typedef struct {
-    ChapterPrefetchSlot slots[10];
-    int last_update_index;
-} ChapterPrefetchCache;
-
-typedef struct {
-    char data_dir[512];
-    char ca_file[512];
-    char cover_url[2048];
-    char cache_path[1024];
-    int running;
-    int ready;
-    int failed;
-    int entry_index;
-} ShelfCoverDownloadState;
-
-static int reader_total_pages(ReaderViewState *state);
-static int reader_find_page_for_offset(const ReaderViewState *state, int target_offset);
-static int reader_reset_content_font(TTF_Font *fallback_font, ReaderViewState *state);
 static int reader_has_cloud_position(const ReaderDocument *doc);
 static const char *reader_find_progress_target(const ReaderViewState *state);
-static int reader_view_adopt_document(TTF_Font *font, ReaderDocument *doc,
-                                      int content_width, int content_height,
-                                      int honor_saved_position, ReaderViewState *state);
-static int reader_view_load(ApiContext *ctx, TTF_Font *font, const char *target, int font_size,
-                            int content_width, int content_height, int honor_saved_position,
-                            ReaderViewState *state);
-static void reader_set_source_target(ReaderViewState *state, const char *source_target);
-static void reader_save_local_position(ApiContext *ctx, ReaderViewState *state);
-static int reader_anchor_offset(const ReaderViewState *state);
-static void reader_progress_note_activity(ReaderViewState *state, Uint32 now);
-static void reader_progress_flush_blocking(ApiContext *ctx, ReaderViewState *state,
-                                           int compute_progress);
-static void chapter_prefetch_reset(ChapterPrefetchState *state);
-static void shelf_cover_download_state_reset(ShelfCoverDownloadState *state);
-static int shelf_cover_download_thread(void *userdata);
-static int chapter_prefetch_cache_adopt(ChapterPrefetchCache *cache, const char *target,
-                                        TTF_Font *body_font, ReaderViewState *reader_state,
-                                        const UiLayout *current_layout);
-static void chapter_prefetch_maybe_start(ApiContext *ctx, ChapterPrefetchState *state,
-                                         SDL_Thread **thread_handle,
-                                         const char *target, int font_size);
 static void render_header_status(SDL_Renderer *renderer, TTF_Font *body_font,
                                  const char *text, const UiLayout *layout);
 static void render_confirm_hint(SDL_Renderer *renderer, TTF_Font *body_font,
@@ -233,37 +105,6 @@ static UiLayout ui_layout_for_rotation(UiRotation rotation) {
     return layout;
 }
 
-static int reader_reset_content_font(TTF_Font *fallback_font, ReaderViewState *state) {
-    int font_size;
-
-    if (!state) {
-        return -1;
-    }
-
-    if (state->content_font) {
-        TTF_CloseFont(state->content_font);
-        state->content_font = NULL;
-    }
-
-    font_size = state->content_font_size > 0 ? state->content_font_size : UI_READER_CONTENT_FONT_SIZE;
-    state->content_font_size = font_size;
-
-    if (state->doc.use_content_font && state->doc.content_font_path[0]) {
-        state->content_font = TTF_OpenFont(state->doc.content_font_path, font_size);
-        if (!state->content_font) {
-            return fallback_font ? 0 : -1;
-        }
-    }
-
-    /* Clear character width cache to force recalculation with new font size.
-     * TTF_OpenFont may reuse the same memory address as the closed font,
-     * causing get_char_width_fast to incorrectly use cached widths from
-     * the previous font size. */
-    char_width_cache_reset();
-
-    return 0;
-}
-
 static int reader_line_height_for_font_size(int font_size) {
     switch (font_size) {
         case 24: return 36;
@@ -295,12 +136,6 @@ static int reader_top_inset_for_font_size(int font_size) {
             return font_size / 2;
     }
 }
-
-static void reader_sync_catalog_selection(ReaderViewState *state);
-static void reader_open_catalog(ApiContext *ctx, ReaderViewState *state, char *status, size_t status_size);
-static int reader_expand_catalog_for_selection(ApiContext *ctx, ReaderViewState *state,
-                                               int direction, char *status, size_t status_size);
-static int reader_find_page_for_offset(const ReaderViewState *state, int target_offset);
 
 typedef struct {
     SDL_Color ink;
@@ -420,6 +255,69 @@ float ui_motion_step(float current, float target, float speed, float dt_seconds)
     return current + (target - current) * factor;
 }
 
+static void ui_reset_transient_input_state(UiRepeatState *repeat_state,
+                                           int *tg5040_select_pressed,
+                                           int *tg5040_start_pressed,
+                                           Uint32 *exit_confirm_until,
+                                           Uint32 *reader_exit_confirm_until) {
+    if (repeat_state) {
+        repeat_state->action = UI_REPEAT_NONE;
+        repeat_state->next_tick = 0;
+    }
+    if (tg5040_select_pressed) {
+        *tg5040_select_pressed = 0;
+    }
+    if (tg5040_start_pressed) {
+        *tg5040_start_pressed = 0;
+    }
+    if (exit_confirm_until) {
+        *exit_confirm_until = 0;
+    }
+    if (reader_exit_confirm_until) {
+        *reader_exit_confirm_until = 0;
+    }
+}
+
+static int ui_login_back_is_held(int tg5040_input, SDL_Joystick **joysticks, int joystick_count) {
+    const Uint8 *keys = SDL_GetKeyboardState(NULL);
+
+    if (keys &&
+        (keys[SDL_SCANCODE_ESCAPE] || keys[SDL_SCANCODE_B] || keys[SDL_SCANCODE_BACKSPACE])) {
+        return 1;
+    }
+    return tg5040_input &&
+           ui_any_joystick_button_pressed(joysticks, joystick_count, TG5040_JOY_B);
+}
+
+static int ui_login_confirm_is_held(int tg5040_input, SDL_Joystick **joysticks, int joystick_count) {
+    const Uint8 *keys = SDL_GetKeyboardState(NULL);
+
+    if (keys &&
+        (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_A])) {
+        return 1;
+    }
+    return tg5040_input &&
+           ui_any_joystick_button_pressed(joysticks, joystick_count, TG5040_JOY_A);
+}
+
+static int ui_shelf_resume_is_held(int tg5040_input, SDL_Joystick **joysticks, int joystick_count) {
+    const Uint8 *keys = SDL_GetKeyboardState(NULL);
+
+    if (keys && keys[SDL_SCANCODE_R]) {
+        return 1;
+    }
+    return tg5040_input &&
+           ui_any_joystick_button_pressed(joysticks, joystick_count, TG5040_JOY_X);
+}
+
+static void ui_force_exit_from_login(UiHapticState *haptic_state) {
+    ui_platform_shutdown_haptics(haptic_state);
+    IMG_Quit();
+    TTF_Quit();
+    SDL_Quit();
+    _Exit(0);
+}
+
 
 static void ui_apply_repeat_action(UiRepeatAction action, ApiContext *ctx, TTF_Font *body_font,
                                    ReaderViewState *reader_state, cJSON *shelf_nuxt, int *selected,
@@ -449,8 +347,8 @@ static void ui_apply_repeat_action(UiRepeatAction action, ApiContext *ctx, TTF_F
     if (action == UI_REPEAT_CATALOG_UP) {
         if (reader_state->catalog_selected > 0) {
             reader_state->catalog_selected--;
-        } else if (reader_expand_catalog_for_selection(ctx, reader_state, -1,
-                                                       shelf_status, shelf_status_size) > 0) {
+        } else if (ui_reader_view_expand_catalog_for_selection(ctx, reader_state, -1,
+                                                               shelf_status, shelf_status_size) > 0) {
             reader_state->catalog_selected--;
         }
         return;
@@ -458,8 +356,8 @@ static void ui_apply_repeat_action(UiRepeatAction action, ApiContext *ctx, TTF_F
     if (action == UI_REPEAT_CATALOG_DOWN) {
         if (reader_state->catalog_selected + 1 < reader_state->doc.catalog_count) {
             reader_state->catalog_selected++;
-        } else if (reader_expand_catalog_for_selection(ctx, reader_state, 1,
-                                                       shelf_status, shelf_status_size) > 0 &&
+        } else if (ui_reader_view_expand_catalog_for_selection(ctx, reader_state, 1,
+                                                               shelf_status, shelf_status_size) > 0 &&
                    reader_state->catalog_selected + 1 < reader_state->doc.catalog_count) {
             reader_state->catalog_selected++;
         }
@@ -471,8 +369,8 @@ static void ui_apply_repeat_action(UiRepeatAction action, ApiContext *ctx, TTF_F
             if (reader_state->catalog_selected < 0) {
                 reader_state->catalog_selected = 0;
             }
-        } else if (reader_expand_catalog_for_selection(ctx, reader_state, -1,
-                                                       shelf_status, shelf_status_size) > 0) {
+        } else if (ui_reader_view_expand_catalog_for_selection(ctx, reader_state, -1,
+                                                               shelf_status, shelf_status_size) > 0) {
             reader_state->catalog_selected -= 10;
             if (reader_state->catalog_selected < 0) {
                 reader_state->catalog_selected = 0;
@@ -486,8 +384,8 @@ static void ui_apply_repeat_action(UiRepeatAction action, ApiContext *ctx, TTF_F
             if (reader_state->catalog_selected >= reader_state->doc.catalog_count) {
                 reader_state->catalog_selected = reader_state->doc.catalog_count - 1;
             }
-        } else if (reader_expand_catalog_for_selection(ctx, reader_state, 1,
-                                                       shelf_status, shelf_status_size) > 0) {
+        } else if (ui_reader_view_expand_catalog_for_selection(ctx, reader_state, 1,
+                                                               shelf_status, shelf_status_size) > 0) {
             reader_state->catalog_selected += 10;
             if (reader_state->catalog_selected >= reader_state->doc.catalog_count) {
                 reader_state->catalog_selected = reader_state->doc.catalog_count - 1;
@@ -496,12 +394,12 @@ static void ui_apply_repeat_action(UiRepeatAction action, ApiContext *ctx, TTF_F
         return;
     }
     if (action == UI_REPEAT_PAGE_NEXT) {
-        int total_pages = reader_total_pages(reader_state);
+        int total_pages = ui_reader_view_total_pages(reader_state);
 
-        reader_progress_note_activity(reader_state, SDL_GetTicks());
+        ui_reader_view_note_progress_activity(reader_state, SDL_GetTicks());
         if (reader_state->current_page + 1 < total_pages) {
             reader_state->current_page++;
-            reader_save_local_position(ctx, reader_state);
+            ui_reader_view_save_local_position(ctx, reader_state);
         } else if (reader_state->doc.next_target && reader_state->doc.next_target[0]) {
             char *target = strdup(reader_state->doc.next_target);
             char source_target[2048];
@@ -511,19 +409,20 @@ static void ui_apply_repeat_action(UiRepeatAction action, ApiContext *ctx, TTF_F
                 return;
             }
             snprintf(source_target, sizeof(source_target), "%s", reader_state->source_target);
-            reader_progress_flush_blocking(ctx, reader_state, 1);
+            ui_reader_view_flush_progress_blocking(ctx, reader_state, 1);
             if (chapter_prefetch_cache &&
-                chapter_prefetch_cache_adopt(chapter_prefetch_cache, target, body_font,
-                                             reader_state, current_layout) == 0) {
-                reader_set_source_target(reader_state, source_target);
-                reader_save_local_position(ctx, reader_state);
+                ui_reader_flow_chapter_prefetch_cache_adopt(chapter_prefetch_cache, target,
+                                                            body_font, reader_state,
+                                                            current_layout) == 0) {
+                ui_reader_view_set_source_target(reader_state, source_target);
+                ui_reader_view_save_local_position(ctx, reader_state);
                 shelf_status[0] = '\0';
-            } else if (reader_view_load(ctx, body_font, target, font_size,
-                                        current_layout->reader_content_w,
-                                        current_layout->reader_content_h, 0,
-                                        reader_state) == 0) {
-                reader_set_source_target(reader_state, source_target);
-                reader_save_local_position(ctx, reader_state);
+            } else if (ui_reader_view_load(ctx, body_font, target, font_size,
+                                           current_layout->reader_content_w,
+                                           current_layout->reader_content_h, 0,
+                                           reader_state) == 0) {
+                ui_reader_view_set_source_target(reader_state, source_target);
+                ui_reader_view_save_local_position(ctx, reader_state);
                 shelf_status[0] = '\0';
             } else {
                 snprintf(shelf_status, shelf_status_size,
@@ -534,10 +433,10 @@ static void ui_apply_repeat_action(UiRepeatAction action, ApiContext *ctx, TTF_F
         return;
     }
     if (action == UI_REPEAT_PAGE_PREV) {
-        reader_progress_note_activity(reader_state, SDL_GetTicks());
+        ui_reader_view_note_progress_activity(reader_state, SDL_GetTicks());
         if (reader_state->current_page > 0) {
             reader_state->current_page--;
-            reader_save_local_position(ctx, reader_state);
+            ui_reader_view_save_local_position(ctx, reader_state);
         } else if (reader_state->doc.prev_target && reader_state->doc.prev_target[0]) {
             char *target = strdup(reader_state->doc.prev_target);
             char source_target[2048];
@@ -547,27 +446,28 @@ static void ui_apply_repeat_action(UiRepeatAction action, ApiContext *ctx, TTF_F
                 return;
             }
             snprintf(source_target, sizeof(source_target), "%s", reader_state->source_target);
-            reader_progress_flush_blocking(ctx, reader_state, 1);
+            ui_reader_view_flush_progress_blocking(ctx, reader_state, 1);
             if (chapter_prefetch_cache &&
-                chapter_prefetch_cache_adopt(chapter_prefetch_cache, target, body_font,
-                                             reader_state, current_layout) == 0) {
+                ui_reader_flow_chapter_prefetch_cache_adopt(chapter_prefetch_cache, target,
+                                                            body_font, reader_state,
+                                                            current_layout) == 0) {
                 int new_total_pages;
 
-                reader_set_source_target(reader_state, source_target);
-                new_total_pages = reader_total_pages(reader_state);
+                ui_reader_view_set_source_target(reader_state, source_target);
+                new_total_pages = ui_reader_view_total_pages(reader_state);
                 reader_state->current_page = new_total_pages > 0 ? new_total_pages - 1 : 0;
-                reader_save_local_position(ctx, reader_state);
+                ui_reader_view_save_local_position(ctx, reader_state);
                 shelf_status[0] = '\0';
-            } else if (reader_view_load(ctx, body_font, target, font_size,
-                                        current_layout->reader_content_w,
-                                        current_layout->reader_content_h, 0,
-                                        reader_state) == 0) {
+            } else if (ui_reader_view_load(ctx, body_font, target, font_size,
+                                           current_layout->reader_content_w,
+                                           current_layout->reader_content_h, 0,
+                                           reader_state) == 0) {
                 int new_total_pages;
 
-                reader_set_source_target(reader_state, source_target);
-                new_total_pages = reader_total_pages(reader_state);
+                ui_reader_view_set_source_target(reader_state, source_target);
+                new_total_pages = ui_reader_view_total_pages(reader_state);
                 reader_state->current_page = new_total_pages > 0 ? new_total_pages - 1 : 0;
-                reader_save_local_position(ctx, reader_state);
+                ui_reader_view_save_local_position(ctx, reader_state);
                 shelf_status[0] = '\0';
             } else {
                 snprintf(shelf_status, shelf_status_size,
@@ -729,14 +629,6 @@ static void progress_report_state_reset(ProgressReportState *state) {
         return;
     }
     reader_document_free(&state->doc);
-    memset(state, 0, sizeof(*state));
-}
-
-static void startup_state_reset(StartupState *state) {
-    if (!state) {
-        return;
-    }
-    cJSON_Delete(state->shelf_nuxt);
     memset(state, 0, sizeof(*state));
 }
 
@@ -1086,96 +978,6 @@ static void shelf_cover_cache_build(ApiContext *ctx, cJSON *nuxt, ShelfCoverCach
             }
         }
     }
-}
-
-static void shelf_cover_download_maybe_start(ApiContext *ctx, ShelfCoverCache *cache,
-                                             ShelfCoverDownloadState *state,
-                                             SDL_Thread **thread_handle, int selected) {
-    int radius = UI_SHELF_COVER_TEXTURE_KEEP_RADIUS;
-
-    if (!ctx || !cache || !state || !thread_handle || *thread_handle || state->running ||
-        !cache->entries || cache->count <= 0) {
-        return;
-    }
-
-    for (int distance = 0; distance <= radius; distance++) {
-        int candidates[2] = { selected - distance, selected + distance };
-        int candidate_count = distance == 0 ? 1 : 2;
-
-        for (int i = 0; i < candidate_count; i++) {
-            int index = candidates[i];
-            ShelfCoverEntry *entry;
-
-            if (index < 0 || index >= cache->count) {
-                continue;
-            }
-            entry = &cache->entries[index];
-            if (!entry->cover_url || !entry->cover_url[0] ||
-                !entry->cache_path[0] || entry->texture ||
-                entry->attempted || entry->download_failed ||
-                access(entry->cache_path, F_OK) == 0) {
-                continue;
-            }
-
-            shelf_cover_download_state_reset(state);
-            snprintf(state->data_dir, sizeof(state->data_dir), "%s", ctx->data_dir);
-            snprintf(state->ca_file, sizeof(state->ca_file), "%s", ctx->ca_file);
-            snprintf(state->cover_url, sizeof(state->cover_url), "%s", entry->cover_url);
-            snprintf(state->cache_path, sizeof(state->cache_path), "%s", entry->cache_path);
-            state->entry_index = index;
-            state->running = 1;
-            entry->attempted = 1;
-            *thread_handle = SDL_CreateThread(shelf_cover_download_thread,
-                                              "weread-cover-download", state);
-            if (!*thread_handle) {
-                state->running = 0;
-                state->failed = 1;
-                entry->attempted = 0;
-                entry->download_failed = 1;
-            }
-            return;
-        }
-    }
-}
-
-static void shelf_cover_download_poll(ShelfCoverCache *cache,
-                                      ShelfCoverDownloadState *state,
-                                      SDL_Thread **thread_handle) {
-    ShelfCoverEntry *entry = NULL;
-
-    if (!cache || !state || !thread_handle || !*thread_handle || state->running) {
-        return;
-    }
-
-    SDL_WaitThread(*thread_handle, NULL);
-    *thread_handle = NULL;
-
-    if (state->entry_index >= 0 && state->entry_index < cache->count) {
-        entry = &cache->entries[state->entry_index];
-    }
-    if (entry) {
-        if (state->ready) {
-            entry->attempted = 0;
-            entry->download_failed = 0;
-        } else {
-            entry->attempted = 0;
-            entry->download_failed = 1;
-        }
-    }
-
-    shelf_cover_download_state_reset(state);
-}
-
-static void shelf_cover_download_stop(ShelfCoverDownloadState *state,
-                                      SDL_Thread **thread_handle) {
-    if (!state || !thread_handle) {
-        return;
-    }
-    if (*thread_handle) {
-        SDL_WaitThread(*thread_handle, NULL);
-        *thread_handle = NULL;
-    }
-    shelf_cover_download_state_reset(state);
 }
 
 static void draw_qr(SDL_Renderer *renderer, const char *path, const SDL_Rect *slot,
@@ -1723,94 +1525,6 @@ static void chapter_prefetch_reset(ChapterPrefetchState *state) {
     memset(state, 0, sizeof(*state));
 }
 
-static void shelf_cover_download_state_reset(ShelfCoverDownloadState *state) {
-    if (!state) {
-        return;
-    }
-    memset(state, 0, sizeof(*state));
-    state->entry_index = -1;
-}
-
-static int shelf_cover_download_to_path(ApiContext *ctx, const char *url, const char *path) {
-    Buffer buf = {0};
-    FILE *fp = NULL;
-    int rc = -1;
-
-    if (!ctx || !url || !*url || !path || !*path) {
-        return -1;
-    }
-    if (api_download(ctx, url, &buf) != 0) {
-        goto cleanup;
-    }
-
-    fp = fopen(path, "wb");
-    if (!fp) {
-        goto cleanup;
-    }
-    if (fwrite(buf.data, 1, buf.size, fp) != buf.size) {
-        goto cleanup;
-    }
-    rc = 0;
-
-cleanup:
-    if (fp) {
-        fclose(fp);
-    }
-    api_buffer_free(&buf);
-    return rc;
-}
-
-static int shelf_cover_download_thread(void *userdata) {
-    ShelfCoverDownloadState *state = (ShelfCoverDownloadState *)userdata;
-    ApiContext ctx;
-
-    if (!state) {
-        return -1;
-    }
-    if (api_init(&ctx, state->data_dir) != 0) {
-        state->failed = 1;
-        state->running = 0;
-        return -1;
-    }
-    snprintf(ctx.ca_file, sizeof(ctx.ca_file), "%s", state->ca_file);
-    if (shelf_cover_download_to_path(&ctx, state->cover_url, state->cache_path) == 0) {
-        state->ready = 1;
-    } else {
-        state->failed = 1;
-    }
-    api_cleanup(&ctx);
-    state->running = 0;
-    return state->ready ? 0 : -1;
-}
-
-static int startup_thread(void *userdata) {
-    StartupState *state = (StartupState *)userdata;
-    ApiContext ctx;
-    int session_poor_network = 0;
-
-    if (!state) {
-        return -1;
-    }
-    if (api_init(&ctx, state->data_dir) != 0) {
-        state->session_ok = -1;
-        state->running = 0;
-        state->completed = 1;
-        return -1;
-    }
-    snprintf(ctx.ca_file, sizeof(ctx.ca_file), "%s", state->ca_file);
-    state->session_ok = auth_check_session(&ctx, &state->shelf_nuxt);
-    session_poor_network = ctx.poor_network;
-    ctx.poor_network = 0;
-    if (state->session_ok == 1) {
-        (void)reader_warmup_font(&ctx);
-    }
-    state->poor_network = session_poor_network;
-    api_cleanup(&ctx);
-    state->running = 0;
-    state->completed = 1;
-    return state->session_ok == 1 ? 0 : -1;
-}
-
 static int reader_prepare_open_document(ApiContext *ctx, const char *source_target,
                                         const char *book_id_hint, int font_size,
                                         ReaderDocument *doc_out,
@@ -1843,7 +1557,7 @@ static int reader_prepare_open_document(ApiContext *ctx, const char *source_targ
     }
 
     if (book_id_hint && *book_id_hint &&
-        state_load_reader_position(ctx, book_id_hint, source_target,
+        reader_state_load_position(ctx, book_id_hint, source_target,
                                    saved_target, sizeof(saved_target),
                                    NULL, &saved_content_font_size,
                                    &saved_page, &saved_offset) == 0) {
@@ -1886,7 +1600,7 @@ static int reader_prepare_open_document(ApiContext *ctx, const char *source_targ
     has_cloud_position = reader_has_cloud_position(&doc);
 
     if (!has_local_position && doc.book_id &&
-        state_load_reader_position_by_book_id(ctx, doc.book_id,
+        reader_state_load_position_by_book_id(ctx, doc.book_id,
                                               saved_source_target, sizeof(saved_source_target),
                                               saved_target, sizeof(saved_target),
                                               NULL, &saved_content_font_size,
@@ -2021,436 +1735,6 @@ static int chapter_prefetch_thread(void *userdata) {
     return state->ready ? 0 : -1;
 }
 
-static int append_blank_lines(ReaderViewState *state, int count) {
-    for (int i = 0; i < count; i++) {
-        int offset = state->line_count > 0 && state->line_offsets ?
-            state->line_offsets[state->line_count - 1] : 0;
-        if (append_line(state, "", 0, offset) != 0) {
-            return -1;
-        }
-    }
-    return 0;
-}
-
-static int reader_total_pages(ReaderViewState *state);
-
-static int wrap_paragraph(TTF_Font *font, const char *text, int max_width, ReaderViewState *state) {
-    const char *p = text;
-    const char *line_start = text;
-    const char *last_break = NULL;
-    const char *last_word_start = NULL;
-    int char_offset = 0;
-    int line_start_offset = 0;
-    int line_width = 0;
-    int in_latin_word = 0;
-
-    if (!font || !text || !state) {
-        return -1;
-    }
-
-    while (*p) {
-        int ch_len = utf8_char_len((unsigned char)*p);
-        int ch_width = 0;
-
-        /* Handle explicit newlines */
-        if (*p == '\n') {
-            if (p > line_start) {
-                if (append_line(state, line_start, (size_t)(p - line_start), line_start_offset) != 0) {
-                    return -1;
-                }
-                if (append_blank_lines(state, UI_READER_PARAGRAPH_GAP_LINES) != 0) {
-                    return -1;
-                }
-            }
-            p++;
-            char_offset++;
-            line_start = p;
-            line_start_offset = char_offset;
-            last_break = NULL;
-            last_word_start = NULL;
-            line_width = 0;
-            in_latin_word = 0;
-            continue;
-        }
-
-        /* Track break opportunities */
-        if (isspace((unsigned char)*p)) {
-            /* Space is always a valid break point */
-            last_break = p;
-            in_latin_word = 0;
-            last_word_start = NULL;
-        } else if (is_cjk_char(p)) {
-            /* CJK characters can break before or after */
-            if (p > line_start) {
-                last_break = p;
-            }
-            in_latin_word = 0;
-            last_word_start = NULL;
-        } else if (is_latin_or_digit(p)) {
-            /* Start of a Latin/digit word - track the word start */
-            if (!in_latin_word) {
-                in_latin_word = 1;
-                last_word_start = p;
-            }
-        } else {
-            /* Other characters (punctuation) - may break after */
-            in_latin_word = 0;
-            last_word_start = NULL;
-        }
-
-        /* Get character width using fast cached lookup */
-        ch_width = get_char_width_fast(font, p, ch_len);
-
-        /* Check if adding this character would exceed max width */
-        if (line_width + ch_width > max_width && p > line_start) {
-            const char *break_at;
-            const char *next_start;
-
-            /* Determine break point */
-            if (last_break && last_break > line_start) {
-                /* Break at last space or CJK boundary */
-                break_at = last_break;
-                if (isspace((unsigned char)*last_break)) {
-                    next_start = last_break + 1;
-                } else {
-                    next_start = last_break;
-                }
-            } else if (last_word_start && last_word_start > line_start) {
-                /* Break before current Latin word */
-                break_at = last_word_start;
-                next_start = last_word_start;
-            } else {
-                /* Force break at current position */
-                break_at = p;
-                next_start = p;
-            }
-
-            /* Trim trailing spaces from line */
-            while (break_at > line_start && isspace((unsigned char)break_at[-1])) {
-                break_at--;
-            }
-
-            /* Skip leading spaces for next line */
-            while (*next_start && isspace((unsigned char)*next_start) && *next_start != '\n') {
-                next_start++;
-            }
-
-            /* Handle forbidden line-start punctuation */
-            {
-                const char *punct = skip_line_start_spacing(next_start, next_start + strlen(next_start));
-                while (*punct && *punct != '\n' && is_forbidden_line_start_punct(punct)) {
-                    punct += utf8_char_len((unsigned char)*punct);
-                }
-                if (punct > next_start) {
-                    break_at = punct;
-                    next_start = punct;
-                }
-            }
-
-            if (append_line(state, line_start, (size_t)(break_at - line_start), line_start_offset) != 0) {
-                return -1;
-            }
-
-            /* Update position tracking */
-            p = next_start;
-            while (*p && isspace((unsigned char)*p) && *p != '\n') {
-                p++;
-                char_offset++;
-            }
-            line_start = p;
-            line_start_offset = char_offset;
-            last_break = NULL;
-            last_word_start = NULL;
-            line_width = 0;
-            in_latin_word = 0;
-            continue;
-        }
-
-        line_width += ch_width;
-        p += ch_len;
-        char_offset++;
-    }
-
-    /* Append remaining text */
-    if (p > line_start) {
-        if (append_line(state, line_start, (size_t)(p - line_start), line_start_offset) != 0) {
-            return -1;
-        }
-    }
-    return 0;
-}
-
-static int reader_view_init_from_document(TTF_Font *font, int content_width, int content_height,
-                                          int honor_saved_position, ReaderViewState *state) {
-    TTF_Font *render_font = font;
-
-    if (!state) {
-        return -1;
-    }
-    if (state->content_font_size <= 0) {
-        state->content_font_size = UI_READER_CONTENT_FONT_SIZE;
-    }
-    if (reader_reset_content_font(font, state) != 0) {
-        return -1;
-    }
-    if (state->content_font) {
-        render_font = state->content_font;
-    }
-    if (wrap_paragraph(render_font, state->doc.content_text, content_width, state) != 0) {
-        return -1;
-    }
-
-    state->line_height = reader_line_height_for_font_size(state->content_font_size);
-    state->lines_per_page = state->line_height > 0 ? content_height / state->line_height : 18;
-    if (state->lines_per_page < 1) {
-        state->lines_per_page = 1;
-    }
-    state->current_page = 0;
-    if (honor_saved_position && state->doc.saved_chapter_offset > 0) {
-        state->current_page = reader_find_page_for_offset(state, state->doc.saved_chapter_offset);
-    }
-    reader_sync_catalog_selection(state);
-    state->catalog_open = 0;
-    return 0;
-}
-
-static int reader_view_adopt_document(TTF_Font *font, ReaderDocument *doc,
-                                      int content_width, int content_height,
-                                      int honor_saved_position, ReaderViewState *state) {
-    int content_font_size = state ? state->content_font_size : UI_READER_CONTENT_FONT_SIZE;
-
-    reader_view_free(state);
-    if (!doc || !doc->content_text || !doc->target) {
-        return -1;
-    }
-    state->doc = *doc;
-    state->content_font_size = content_font_size;
-    memset(doc, 0, sizeof(*doc));
-    if (reader_view_init_from_document(font, content_width, content_height,
-                                       honor_saved_position, state) != 0) {
-        reader_view_free(state);
-        return -1;
-    }
-    return 0;
-}
-
-static int reader_view_load(ApiContext *ctx, TTF_Font *font, const char *target, int font_size,
-                            int content_width, int content_height, int honor_saved_position,
-                            ReaderViewState *state) {
-    int content_font_size = state ? state->content_font_size : UI_READER_CONTENT_FONT_SIZE;
-
-    reader_view_free(state);
-    if (reader_load(ctx, target, font_size, &state->doc) != 0) {
-        return -1;
-    }
-    state->content_font_size = content_font_size;
-    if (reader_view_init_from_document(font, content_width, content_height,
-                                       honor_saved_position, state) != 0) {
-        reader_view_free(state);
-        return -1;
-    }
-    return 0;
-}
-
-static int reader_rewrap(TTF_Font *font, int content_width, int content_height,
-                         ReaderViewState *state) {
-    TTF_Font *render_font = state->content_font ? state->content_font : font;
-    int saved_offset = 0;
-
-    if (!state || !state->doc.content_text) {
-        return -1;
-    }
-
-    /* Anchor around the visible portion of the current page so font-size
-     * changes keep us near what we were actually reading. */
-    saved_offset = reader_anchor_offset(state);
-
-    /* Free old lines but keep doc */
-    if (state->lines) {
-        for (int i = 0; i < state->line_count; i++) {
-            free(state->lines[i]);
-        }
-        free(state->lines);
-        state->lines = NULL;
-    }
-    free(state->line_offsets);
-    state->line_offsets = NULL;
-    state->line_count = 0;
-    state->line_capacity = 0;
-
-    if (wrap_paragraph(render_font, state->doc.content_text, content_width, state) != 0) {
-        return -1;
-    }
-
-    state->line_height = reader_line_height_for_font_size(state->content_font_size);
-    state->lines_per_page = state->line_height > 0 ? content_height / state->line_height : 18;
-    if (state->lines_per_page < 1) {
-        state->lines_per_page = 1;
-    }
-
-    state->current_page = reader_find_page_for_offset(state, saved_offset);
-    return 0;
-}
-
-static int reader_total_pages(ReaderViewState *state) {
-    if (!state || state->line_count < 0) {
-        return 1;
-    }
-    return state->line_count > 0 ?
-        (state->line_count + state->lines_per_page - 1) / state->lines_per_page : 1;
-}
-
-static int reader_find_page_for_offset(const ReaderViewState *state, int target_offset) {
-    int total_pages;
-
-    if (!state || target_offset <= 0) {
-        return 0;
-    }
-
-    total_pages = reader_total_pages((ReaderViewState *)state);
-    if (total_pages <= 1) {
-        return 0;
-    }
-
-    if (state->line_offsets && state->line_count > 0) {
-        for (int page = 0; page < total_pages; page++) {
-            int start_line = page * state->lines_per_page;
-            int next_start_line = (page + 1) * state->lines_per_page;
-            int page_start_offset;
-            int next_page_offset;
-            if (start_line >= state->line_count) {
-                return total_pages - 1;
-            }
-            page_start_offset = state->line_offsets[start_line];
-            if (target_offset <= page_start_offset) {
-                return page;
-            }
-            if (next_start_line >= state->line_count) {
-                return page;
-            }
-            next_page_offset = state->line_offsets[next_start_line];
-            if (target_offset < next_page_offset) {
-                return page;
-            }
-        }
-        return total_pages - 1;
-    }
-
-    for (int page = 0; page < total_pages; page++) {
-        int page_offset = reader_estimate_chapter_offset(&state->doc, page, total_pages);
-        if (page_offset >= target_offset) {
-            return page;
-        }
-    }
-
-    return total_pages - 1;
-}
-
-static int reader_current_page_offset(const ReaderViewState *state) {
-    int start_line;
-
-    if (!state) {
-        return 0;
-    }
-    start_line = state->current_page * state->lines_per_page;
-    if (state->line_offsets && start_line >= 0 && start_line < state->line_count) {
-        return state->line_offsets[start_line];
-    }
-    return reader_estimate_chapter_offset(&state->doc,
-                                          state->current_page,
-                                          reader_total_pages((ReaderViewState *)state));
-}
-
-static int reader_anchor_offset(const ReaderViewState *state) {
-    int start_line;
-    int end_line;
-    int visible_lines;
-    int anchor_line;
-
-    if (!state || !state->line_offsets || state->line_count <= 0 || state->lines_per_page <= 0) {
-        return 0;
-    }
-
-    start_line = state->current_page * state->lines_per_page;
-    if (start_line < 0) {
-        start_line = 0;
-    }
-    if (start_line >= state->line_count) {
-        return state->line_offsets[state->line_count - 1];
-    }
-
-    end_line = start_line + state->lines_per_page;
-    if (end_line > state->line_count) {
-        end_line = state->line_count;
-    }
-    visible_lines = end_line - start_line;
-    if (visible_lines <= 0) {
-        return state->line_offsets[start_line];
-    }
-
-    anchor_line = start_line + visible_lines / 2;
-    if (anchor_line >= end_line) {
-        anchor_line = end_line - 1;
-    }
-    return state->line_offsets[anchor_line];
-}
-
-static void reader_set_source_target(ReaderViewState *state, const char *source_target) {
-    if (!state) {
-        return;
-    }
-    if (!source_target) {
-        state->source_target[0] = '\0';
-        return;
-    }
-    snprintf(state->source_target, sizeof(state->source_target), "%s", source_target);
-}
-
-static void reader_clamp_current_page(ReaderViewState *state) {
-    int total_pages;
-
-    if (!state) {
-        return;
-    }
-    total_pages = reader_total_pages(state);
-    if (state->current_page < 0) {
-        state->current_page = 0;
-    }
-    if (state->current_page >= total_pages) {
-        state->current_page = total_pages - 1;
-    }
-    if (state->current_page < 0) {
-        state->current_page = 0;
-    }
-}
-
-static int reader_current_catalog_index(ReaderViewState *state) {
-    if (!state || !state->doc.catalog_items || state->doc.catalog_count <= 0) {
-        return -1;
-    }
-    for (int i = 0; i < state->doc.catalog_count; i++) {
-        if (state->doc.catalog_items[i].is_current) {
-            return i;
-        }
-    }
-    if (state->doc.chapter_uid) {
-        for (int i = 0; i < state->doc.catalog_count; i++) {
-            if (state->doc.catalog_items[i].chapter_uid &&
-                strcmp(state->doc.catalog_items[i].chapter_uid, state->doc.chapter_uid) == 0) {
-                return i;
-            }
-        }
-    }
-    if (state->doc.chapter_idx > 0) {
-        for (int i = 0; i < state->doc.catalog_count; i++) {
-            if (state->doc.catalog_items[i].chapter_idx == state->doc.chapter_idx) {
-                return i;
-            }
-        }
-    }
-    return 0;
-}
-
 static int reader_is_catalog_item_current(const ReaderViewState *state, const ReaderCatalogItem *item) {
     if (!state || !item) {
         return 0;
@@ -2522,32 +1806,6 @@ static int reader_has_cloud_position(const ReaderDocument *doc) {
     return 0;
 }
 
-static void reader_sync_catalog_selection(ReaderViewState *state) {
-    int index;
-
-    if (!state) {
-        return;
-    }
-    index = reader_current_catalog_index(state);
-    state->catalog_selected = index >= 0 ? index : 0;
-}
-
-static void reader_open_catalog(ApiContext *ctx, ReaderViewState *state, char *status, size_t status_size) {
-    if (!state || state->doc.catalog_count <= 0) {
-        return;
-    }
-
-    if (ctx) {
-        reader_focus_catalog(ctx, &state->doc);
-    }
-    if (status && status_size > 0) {
-        status[0] = '\0';
-    }
-
-    reader_sync_catalog_selection(state);
-    state->catalog_open = 1;
-}
-
 static void chapter_prefetch_maybe_start(ApiContext *ctx, ChapterPrefetchState *state,
                                          SDL_Thread **thread_handle,
                                          const char *target, int font_size) {
@@ -2614,15 +1872,6 @@ static int chapter_prefetch_target_in_list(const char *target, char targets[][20
     return 0;
 }
 
-static void chapter_prefetch_cache_poll(ChapterPrefetchCache *cache) {
-    if (!cache) {
-        return;
-    }
-    for (int i = 0; i < (int)(sizeof(cache->slots) / sizeof(cache->slots[0])); i++) {
-        chapter_prefetch_poll(&cache->slots[i].state, &cache->slots[i].thread);
-    }
-}
-
 static int chapter_prefetch_cache_adopt(ChapterPrefetchCache *cache, const char *target,
                                         TTF_Font *body_font, ReaderViewState *reader_state,
                                         const UiLayout *current_layout) {
@@ -2633,10 +1882,10 @@ static int chapter_prefetch_cache_adopt(ChapterPrefetchCache *cache, const char 
         ChapterPrefetchSlot *slot = &cache->slots[i];
         if (slot->state.ready &&
             strcmp(slot->state.target, target) == 0 &&
-            reader_view_adopt_document(body_font, &slot->state.doc,
-                                       current_layout->reader_content_w,
-                                       current_layout->reader_content_h, 0,
-                                       reader_state) == 0) {
+            ui_reader_view_adopt_document(body_font, &slot->state.doc,
+                                          current_layout->reader_content_w,
+                                          current_layout->reader_content_h, 0,
+                                          reader_state) == 0) {
             chapter_prefetch_slot_reset(slot);
             return 0;
         }
@@ -2680,204 +1929,6 @@ static void chapter_prefetch_cache_request(ApiContext *ctx, ChapterPrefetchCache
     }
 
     chapter_prefetch_maybe_start(ctx, &free_slot->state, &free_slot->thread, target, font_size);
-}
-
-static void chapter_prefetch_cache_update(ApiContext *ctx, ChapterPrefetchCache *cache,
-                                          ReaderViewState *reader_state) {
-    char targets[UI_CHAPTER_PREFETCH_RADIUS * 2][2048];
-    int target_count = 0;
-    int current_index;
-
-    if (!ctx || !cache || !reader_state) {
-        return;
-    }
-
-    current_index = reader_current_catalog_index(reader_state);
-    if (current_index >= 0 && current_index == cache->last_update_index) {
-        return;
-    }
-    cache->last_update_index = current_index;
-    if (reader_state->doc.catalog_items && reader_state->doc.catalog_count > 0 && current_index >= 0) {
-        for (int distance = 1; distance <= UI_CHAPTER_PREFETCH_RADIUS; distance++) {
-            int indexes[2] = { current_index - distance, current_index + distance };
-
-            for (int j = 0; j < 2; j++) {
-                int index = indexes[j];
-                ReaderCatalogItem *item;
-                if (index < 0 || index >= reader_state->doc.catalog_count) {
-                    continue;
-                }
-                item = &reader_state->doc.catalog_items[index];
-                if (!item->target || !item->target[0] ||
-                    chapter_prefetch_target_in_list(item->target, targets, target_count)) {
-                    continue;
-                }
-                snprintf(targets[target_count++], sizeof(targets[0]), "%s", item->target);
-            }
-        }
-    } else {
-        if (reader_state->doc.prev_target && reader_state->doc.prev_target[0]) {
-            snprintf(targets[target_count++], sizeof(targets[0]), "%s", reader_state->doc.prev_target);
-        }
-        if (reader_state->doc.next_target && reader_state->doc.next_target[0] &&
-            !chapter_prefetch_target_in_list(reader_state->doc.next_target, targets, target_count)) {
-            snprintf(targets[target_count++], sizeof(targets[0]), "%s", reader_state->doc.next_target);
-        }
-    }
-
-    for (int i = 0; i < (int)(sizeof(cache->slots) / sizeof(cache->slots[0])); i++) {
-        ChapterPrefetchSlot *slot = &cache->slots[i];
-        if ((slot->state.ready || slot->state.running) &&
-            !chapter_prefetch_target_in_list(slot->state.target, targets, target_count) &&
-            !slot->state.running) {
-            chapter_prefetch_slot_reset(slot);
-        }
-    }
-
-    for (int i = 0; i < target_count; i++) {
-        chapter_prefetch_cache_request(ctx, cache, targets[i], reader_state->doc.font_size);
-    }
-}
-
-static void chapter_prefetch_cache_reset(ChapterPrefetchCache *cache) {
-    if (!cache) {
-        return;
-    }
-    for (int i = 0; i < (int)(sizeof(cache->slots) / sizeof(cache->slots[0])); i++) {
-        chapter_prefetch_slot_reset(&cache->slots[i]);
-    }
-    cache->last_update_index = -1;
-}
-
-static int chapter_prefetch_cache_has_running_work(const ChapterPrefetchCache *cache) {
-    if (!cache) {
-        return 0;
-    }
-    for (int i = 0; i < (int)(sizeof(cache->slots) / sizeof(cache->slots[0])); i++) {
-        if (cache->slots[i].thread || cache->slots[i].state.running) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int reader_expand_catalog_for_selection(ApiContext *ctx, ReaderViewState *state,
-                                               int direction, char *status, size_t status_size) {
-    int added_count = 0;
-
-    if (!ctx || !state || !state->doc.catalog_items || state->doc.catalog_count <= 0) {
-        return 0;
-    }
-    if (reader_expand_catalog(ctx, &state->doc, direction, &added_count) != 0) {
-        if (status && status_size > 0) {
-            /* 无法加载更多章节 */
-            snprintf(status, status_size, "\xE6\x97\xA0\xE6\xB3\x95\xE5\x8A\xA0\xE8\xBD\xBD\xE6\x9B\xB4\xE5\xA4\x9A\xE7\xAB\xA0\xE8\x8A\x82");
-        }
-        return 0;
-    }
-    if (direction < 0 && added_count > 0) {
-        state->catalog_selected += added_count;
-    }
-    return added_count;
-}
-
-static void reader_build_page_summary(ReaderViewState *state, char *out, size_t out_size) {
-    int total_pages;
-    int start_line;
-    int end_line;
-    size_t len = 0;
-
-    if (!out || out_size == 0) {
-        return;
-    }
-    out[0] = '\0';
-    if (!state || !state->lines || state->line_count <= 0) {
-        return;
-    }
-
-    total_pages = reader_total_pages(state);
-    start_line = state->current_page * state->lines_per_page;
-    end_line = start_line + state->lines_per_page;
-    if (end_line > state->line_count) {
-        end_line = state->line_count;
-    }
-
-    for (int i = start_line; i < end_line && len + 1 < out_size; i++) {
-        const char *p = state->lines[i];
-        while (p && *p && len + 1 < out_size) {
-            int ch_len = utf8_char_len((unsigned char)*p);
-            if (len + (size_t)ch_len >= out_size) {
-                break;
-            }
-            memcpy(out + len, p, (size_t)ch_len);
-            len += (size_t)ch_len;
-            p += ch_len;
-            if (len >= 20) {
-                break;
-            }
-        }
-        if (len >= 20 || state->current_page + 1 < total_pages) {
-            break;
-        }
-    }
-    out[len] = '\0';
-}
-
-static void reader_save_local_position(ApiContext *ctx, ReaderViewState *state) {
-    int current_offset;
-
-    if (!ctx || !state || !state->doc.book_id || !state->doc.target || !state->source_target[0]) {
-        return;
-    }
-    reader_clamp_current_page(state);
-    current_offset = reader_anchor_offset(state);
-    state_save_reader_position(ctx, state->doc.book_id, state->source_target, state->doc.target,
-                               state->doc.font_size, state->content_font_size,
-                               state->current_page, current_offset);
-    state_save_last_reader(ctx, state->source_target, state->doc.font_size, state->content_font_size);
-}
-
-static void reader_progress_begin(ReaderViewState *state, Uint32 now) {
-    if (!state || state->progress_initialized) {
-        return;
-    }
-    state->progress_initialized = 1;
-    state->progress_paused = 0;
-    state->progress_initial_report_pending = 1;
-    state->progress_start_tick = now;
-    state->progress_pause_tick = 0;
-    state->progress_pause_deadline_tick = now + UI_PROGRESS_PAUSE_TIMEOUT_MS;
-    state->progress_report_due_tick = now + UI_PROGRESS_REPORT_INTERVAL_MS;
-}
-
-static void reader_progress_note_activity(ReaderViewState *state, Uint32 now) {
-    Uint32 paused_duration;
-
-    if (!state) {
-        return;
-    }
-    if (!state->progress_initialized) {
-        reader_progress_begin(state, now);
-        return;
-    }
-
-    state->progress_pause_deadline_tick = now + UI_PROGRESS_PAUSE_TIMEOUT_MS;
-    if (!state->progress_paused) {
-        return;
-    }
-
-    paused_duration = state->progress_pause_tick > 0 && now > state->progress_pause_tick ?
-        (now - state->progress_pause_tick) : 0;
-    if (paused_duration > 0 && state->progress_start_tick > 0) {
-        state->progress_start_tick += paused_duration;
-    }
-    state->progress_paused = 0;
-    state->progress_pause_tick = 0;
-    if (now - state->progress_start_tick > UI_PROGRESS_REPORT_INTERVAL_MS) {
-        state->progress_report_due_tick = now;
-    } else if (state->progress_report_due_tick == 0) {
-        state->progress_report_due_tick = state->progress_start_tick + UI_PROGRESS_REPORT_INTERVAL_MS;
-    }
 }
 
 static int reader_progress_finalize_thread(ReaderViewState *state,
@@ -2928,94 +1979,17 @@ static void reader_progress_queue_report(ApiContext *ctx, ReaderViewState *state
         return;
     }
     report_state->current_page = state->current_page;
-    report_state->total_pages = reader_total_pages(state);
-    report_state->chapter_offset = reader_current_page_offset(state);
+    report_state->total_pages = ui_reader_view_total_pages(state);
+    report_state->chapter_offset = ui_reader_view_current_page_offset(state);
     report_state->reading_seconds = reading_seconds > 0 ? reading_seconds : 0;
     report_state->compute_progress = compute_progress;
-    reader_build_page_summary(state, report_state->page_summary, sizeof(report_state->page_summary));
+    ui_reader_view_build_page_summary(state, report_state->page_summary,
+                                      sizeof(report_state->page_summary));
     report_state->running = 1;
     *report_thread = SDL_CreateThread(progress_report_thread, "weread-progress-report", report_state);
     if (!*report_thread) {
         progress_report_state_reset(report_state);
     }
-}
-
-static void reader_progress_flush_blocking(ApiContext *ctx, ReaderViewState *state,
-                                          int compute_progress) {
-    Uint32 now;
-    Uint32 elapsed_ms;
-    int elapsed_seconds;
-    int rc;
-    char page_summary[128];
-
-    if (!ctx || !state || !state->doc.book_id || !state->doc.token || !state->doc.chapter_uid) {
-        return;
-    }
-
-    now = SDL_GetTicks();
-    reader_progress_note_activity(state, now);
-    elapsed_ms = state->progress_start_tick > 0 && now > state->progress_start_tick ?
-        (now - state->progress_start_tick) : 0;
-    elapsed_seconds = (int)(elapsed_ms / 1000);
-    if (elapsed_seconds < 0) {
-        elapsed_seconds = 0;
-    }
-    reader_build_page_summary(state, page_summary, sizeof(page_summary));
-    rc = reader_report_progress_at_offset(ctx, &state->doc, state->current_page,
-                                          reader_total_pages(state), elapsed_seconds,
-                                          page_summary, compute_progress,
-                                          reader_current_page_offset(state));
-    if (rc == READER_REPORT_OK) {
-        state->progress_start_tick = now;
-        if (!state->progress_paused) {
-            state->progress_report_due_tick = now + UI_PROGRESS_REPORT_INTERVAL_MS;
-        }
-    } else if (!state->progress_paused) {
-        state->progress_report_due_tick = now + UI_PROGRESS_REPORT_INTERVAL_MS;
-    }
-}
-
-static int reader_progress_update(ApiContext *ctx, ReaderViewState *state,
-                                  ProgressReportState *report_state,
-                                  SDL_Thread **report_thread) {
-    Uint32 now;
-    Uint32 elapsed_ms;
-    int elapsed_seconds;
-
-    if (!ctx || !state || !report_state || !report_thread ||
-        !state->doc.book_id || !state->doc.token || !state->doc.chapter_uid) {
-        return 0;
-    }
-
-    now = SDL_GetTicks();
-    reader_progress_begin(state, now);
-    reader_progress_finalize_thread(state, report_state, report_thread);
-
-    if (!state->progress_paused && now >= state->progress_pause_deadline_tick) {
-        state->progress_paused = 1;
-        state->progress_pause_tick = now;
-        state->progress_report_due_tick = 0;
-    }
-
-    if (*report_thread || report_state->running || state->progress_paused) {
-        return 0;
-    }
-
-    if (state->progress_initial_report_pending) {
-        state->progress_initial_report_pending = 0;
-        reader_progress_queue_report(ctx, state, report_state, report_thread, 0, 0);
-        return 0;
-    }
-
-    if (state->progress_report_due_tick == 0 || now < state->progress_report_due_tick) {
-        return 0;
-    }
-
-    elapsed_ms = state->progress_start_tick > 0 && now > state->progress_start_tick ?
-        (now - state->progress_start_tick) : 0;
-    elapsed_seconds = (int)(elapsed_ms / 1000);
-    reader_progress_queue_report(ctx, state, report_state, report_thread, elapsed_seconds, 1);
-    return 0;
 }
 
 static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
@@ -3245,125 +2219,6 @@ static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font,
     }
 }
 
-static int login_start_thread(void *userdata) {
-    LoginStartState *state = (LoginStartState *)userdata;
-    ApiContext ctx;
-
-    if (api_init(&ctx, state->data_dir) != 0) {
-        state->failed = 1;
-        state->running = 0;
-        return -1;
-    }
-    snprintf(ctx.ca_file, sizeof(ctx.ca_file), "%s", state->ca_file);
-
-    if (auth_start(&ctx, &state->session, state->qr_path) == 0) {
-        state->success = 1;
-    } else {
-        state->failed = 1;
-    }
-
-    api_cleanup(&ctx);
-    state->running = 0;
-    return state->success ? 0 : -1;
-}
-
-static int login_poll_thread(void *userdata) {
-    LoginPollState *state = (LoginPollState *)userdata;
-    ApiContext ctx;
-
-    if (api_init(&ctx, state->data_dir) != 0) {
-        state->running = 0;
-        return -1;
-    }
-    snprintf(ctx.ca_file, sizeof(ctx.ca_file), "%s", state->ca_file);
-
-    while (!state->stop && !state->completed) {
-        AuthPollStatus status = AUTH_POLL_WAITING;
-        if (auth_poll_once(&ctx, &state->session, &status) == 0) {
-            state->last_status = status;
-            if (status == AUTH_POLL_CONFIRMED) {
-                state->completed = 1;
-                break;
-            }
-        } else {
-            state->last_status = AUTH_POLL_ERROR;
-        }
-        SDL_Delay(700);
-    }
-
-    api_cleanup(&ctx);
-    state->running = 0;
-    return state->completed ? 0 : -1;
-}
-
-static void begin_login_flow(ApiContext *ctx, LoginStartState *login_start,
-                             SDL_Thread **login_thread, UiView *view,
-                             char *status, size_t status_size, const char *qr_path) {
-    if (login_start->running || *login_thread) {
-        return;
-    }
-
-    memset(login_start, 0, sizeof(*login_start));
-    snprintf(login_start->data_dir, sizeof(login_start->data_dir), "%s", ctx->data_dir);
-    snprintf(login_start->ca_file, sizeof(login_start->ca_file), "%s", ctx->ca_file);
-    snprintf(login_start->qr_path, sizeof(login_start->qr_path), "%s", qr_path);
-    login_start->running = 1;
-    /* 正在生成二维码... */
-    snprintf(status, status_size, "\xE6\xAD\xA3\xE5\x9C\xA8\xE7\x94\x9F\xE6\x88\x90\xE4\xBA\x8C\xE7\xBB\xB4\xE7\xA0\x81...");
-    *view = VIEW_LOGIN;
-    *login_thread = SDL_CreateThread(login_start_thread, "weread-login-start", login_start);
-    if (!*login_thread) {
-        login_start->running = 0;
-        login_start->failed = 1;
-        /* 无法创建登录线程 */
-        snprintf(status, status_size, "\xE6\x97\xA0\xE6\xB3\x95\xE5\x88\x9B\xE5\xBB\xBA\xE7\x99\xBB\xE5\xBD\x95\xE7\xBA\xBF\xE7\xA8\x8B");
-    }
-}
-
-static void begin_startup_refresh(ApiContext *ctx, StartupState *startup_state,
-                                  SDL_Thread **startup_thread_handle) {
-    if (!ctx || !startup_state || !startup_thread_handle || *startup_thread_handle ||
-        startup_state->running) {
-        return;
-    }
-
-    startup_state_reset(startup_state);
-    snprintf(startup_state->data_dir, sizeof(startup_state->data_dir), "%s", ctx->data_dir);
-    snprintf(startup_state->ca_file, sizeof(startup_state->ca_file), "%s", ctx->ca_file);
-    startup_state->running = 1;
-    *startup_thread_handle = SDL_CreateThread(startup_thread, "weread-startup", startup_state);
-    if (!*startup_thread_handle) {
-        startup_state->running = 0;
-        startup_state->completed = 1;
-        startup_state->session_ok = -1;
-    }
-}
-
-static void begin_reader_open(ApiContext *ctx, ReaderOpenState *reader_open,
-                              SDL_Thread **reader_open_thread_handle,
-                              const char *source_target, const char *book_id, int font_size) {
-    if (!ctx || !reader_open || !reader_open_thread_handle || !source_target || !*source_target ||
-        *reader_open_thread_handle || reader_open->running) {
-        return;
-    }
-
-    reader_open_state_reset(reader_open);
-    snprintf(reader_open->data_dir, sizeof(reader_open->data_dir), "%s", ctx->data_dir);
-    snprintf(reader_open->ca_file, sizeof(reader_open->ca_file), "%s", ctx->ca_file);
-    snprintf(reader_open->source_target, sizeof(reader_open->source_target), "%s", source_target);
-    if (book_id && *book_id) {
-        snprintf(reader_open->book_id, sizeof(reader_open->book_id), "%s", book_id);
-    }
-    reader_open->font_size = font_size;
-    reader_open->content_font_size = UI_READER_CONTENT_FONT_SIZE;
-    reader_open->running = 1;
-    *reader_open_thread_handle = SDL_CreateThread(reader_open_thread, "weread-reader-open", reader_open);
-    if (!*reader_open_thread_handle) {
-        reader_open->running = 0;
-        reader_open->failed = 1;
-    }
-}
-
 int ui_is_available(void) {
     return 1;
 }
@@ -3422,6 +2277,14 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     Uint32 lock_button_ignore_until = 0;
     Uint32 last_lock_trigger_tick = 0;
     time_t last_clock_minute = 0;
+    int login_back_latch = 0;
+    int login_confirm_latch = 0;
+    int shelf_back_latch = 0;
+    int shelf_confirm_latch = 0;
+    int shelf_resume_latch = 0;
+    int shelf_next_latch = 0;
+    int shelf_prev_latch = 0;
+    int shelf_back_blocked = 0;
     int rc = -1;
 
     memset(&session, 0, sizeof(session));
@@ -3431,7 +2294,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     memset(&reader_open, 0, sizeof(reader_open));
     memset(&progress_report, 0, sizeof(progress_report));
     memset(&shelf_covers, 0, sizeof(shelf_covers));
-    shelf_cover_download_state_reset(&shelf_cover_download);
+    ui_shelf_flow_cover_download_state_reset(&shelf_cover_download);
     memset(&chapter_prefetch_cache, 0, sizeof(chapter_prefetch_cache));
     memset(&reader_state, 0, sizeof(reader_state));
     memset(&repeat_state, 0, sizeof(repeat_state));
@@ -3496,15 +2359,16 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     }
     (void)ui_platform_init_haptics(tg5040_input, &haptic_state);
 
-    ui_dark_mode = state_load_dark_mode(ctx);
-    if (state_load_brightness_level(ctx, &brightness_level) == 0) {
+    ui_dark_mode = preferences_state_load_dark_mode(ctx);
+    if (preferences_state_load_brightness_level(ctx, &brightness_level) == 0) {
         ui_platform_apply_brightness_level(tg5040_input, brightness_level);
     }
 
-    shelf_nuxt = state_read_json(ctx, "shelf.json");
+    shelf_nuxt = shelf_state_load_cache(ctx);
     if (shelf_nuxt && shelf_books(shelf_nuxt) && cJSON_IsArray(shelf_books(shelf_nuxt))) {
         shelf_status[0] = '\0';
-        shelf_cover_download_stop(&shelf_cover_download, &shelf_cover_download_thread_handle);
+        ui_shelf_flow_cover_download_stop(&shelf_cover_download,
+                                          &shelf_cover_download_thread_handle);
         shelf_cover_cache_build(ctx, shelf_nuxt, &shelf_covers);
         view = VIEW_SHELF;
     } else {
@@ -3514,7 +2378,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
         /* 正在检查书架... */
         snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE6\xA3\x80\xE6\x9F\xA5\xE4\xB9\xA6\xE6\x9E\xB6...");
     }
-    begin_startup_refresh(ctx, &startup_state, &startup_thread_handle);
+    ui_startup_login_begin_startup_refresh(ctx, &startup_state, &startup_thread_handle);
 
     while (running) {
         SDL_Event event;
@@ -3526,6 +2390,10 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
         int catalog_open_before_updates = reader_state.catalog_open;
         int reader_input_seen = 0;
         int render_requested = 0;
+        int shelf_back_event_seen = 0;
+        int shelf_confirm_event_seen = 0;
+        int shelf_resume_event_seen = 0;
+        int shelf_nav_event_seen = 0;
         time_t current_clock_minute = wall_now / 60;
 
         motion_state.last_tick = frame_now;
@@ -3570,15 +2438,37 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         tg5040_start_pressed = 1;
                     }
                 }
+                if (view == VIEW_SHELF) {
+                    if (ui_event_is_back(&event, tg5040_input)) {
+                        shelf_back_event_seen = 1;
+                    }
+                    if (ui_event_is_confirm(&event, tg5040_input)) {
+                        shelf_confirm_event_seen = 1;
+                    }
+                    if (ui_event_is_shelf_resume(&event, tg5040_input)) {
+                        shelf_resume_event_seen = 1;
+                    }
+                    if (ui_event_is_up(&event, tg5040_input) ||
+                        ui_event_is_down(&event, tg5040_input) ||
+                        ui_event_is_left(&event, tg5040_input) ||
+                        ui_event_is_right(&event, tg5040_input)) {
+                        shelf_nav_event_seen = 1;
+                    }
+                }
                 if (ui_event_is_back(&event, tg5040_input)) {
-                    if (view == VIEW_READER) {
+                    if (view == VIEW_LOGIN) {
+                        login_active = 0;
+                        login_poll.stop = 1;
+                        ui_force_exit_from_login(&haptic_state);
+                    } else if (view == VIEW_READER) {
                         if (reader_state.catalog_open) {
                             reader_state.catalog_open = 0;
                             ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
                         } else if (reader_exit_confirm_until > frame_now) {
-                            reader_progress_flush_blocking(ctx, &reader_state, 1);
-                            reader_save_local_position(ctx, &reader_state);
+                            ui_reader_view_flush_progress_blocking(ctx, &reader_state, 1);
+                            ui_reader_view_save_local_position(ctx, &reader_state);
                             reader_exit_confirm_until = 0;
+                            exit_confirm_until = 0;
                             view = VIEW_SHELF;
                             ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 50);
                         } else {
@@ -3586,6 +2476,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                             render_requested = 1;
                             ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
                         }
+                    } else if (view == VIEW_SHELF && shelf_back_blocked) {
+                        /* Ignore carried-over back press until the key is released once. */
                     } else if (view == VIEW_OPENING && reader_open.running) {
                         /* 正在打开书籍... */
                         snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE6\x89\x93\xE5\xBC\x80\xE4\xB9\xA6\xE7\xB1\x8D...");
@@ -3602,7 +2494,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                 } else if (ui_event_is_dark_mode_toggle(&event, tg5040_input,
                                                         tg5040_select_pressed)) {
                     ui_dark_mode = !ui_dark_mode;
-                    state_save_dark_mode(ctx, ui_dark_mode);
+                    preferences_state_save_dark_mode(ctx, ui_dark_mode);
                     render_requested = 1;
                     ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 40);
                 } else if (ui_event_is_brightness_up(&event, tg5040_input,
@@ -3635,8 +2527,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                             frame_now - last_lock_trigger_tick >= 1000)) {
                     last_lock_trigger_tick = frame_now;
                     if (view == VIEW_READER) {
-                        reader_progress_flush_blocking(ctx, &reader_state, 1);
-                        reader_save_local_position(ctx, &reader_state);
+                        ui_reader_view_flush_progress_blocking(ctx, &reader_state, 1);
+                        ui_reader_view_save_local_position(ctx, &reader_state);
                     }
                     if (ui_platform_lock_screen(tg5040_input) == 0) {
                         tg5040_select_pressed = 0;
@@ -3663,8 +2555,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         break;
                     }
                     if (view == VIEW_READER) {
-                        reader_rewrap(body_font, current_layout.reader_content_w,
-                                      current_layout.reader_content_h, &reader_state);
+                        ui_reader_view_rewrap(body_font, current_layout.reader_content_w,
+                                              current_layout.reader_content_h, &reader_state);
                     }
                     ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 60);
                 } else if (view == VIEW_SHELF) {
@@ -3673,50 +2565,51 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                     if ((ui_event_is_down(&event, tg5040_input) || ui_event_is_right(&event, tg5040_input)) &&
                         count > 0 && selected + 1 < count) {
                         selected++;
+                        render_requested = 1;
                         ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 25);
                     } else if ((ui_event_is_up(&event, tg5040_input) || ui_event_is_left(&event, tg5040_input)) &&
                                selected > 0) {
                         selected--;
+                        render_requested = 1;
                         ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 25);
                     } else if (ui_event_is_shelf_resume(&event, tg5040_input)) {
                         char target[2048];
                         int font_size = 3;
-                        if (state_load_last_reader(ctx, target, sizeof(target), &font_size, NULL) == 0) {
-                            /* 正在打开 */
-                            snprintf(loading_title, sizeof(loading_title), "\xE6\xAD\xA3\xE5\x9C\xA8\xE6\x89\x93\xE5\xBC\x80");
-                            /* 正在恢复阅读位置... */
-                            snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE6\x81\xA2\xE5\xA4\x8D\xE9\x98\x85\xE8\xAF\xBB\xE4\xBD\x8D\xE7\xBD\xAE...");
-                            begin_reader_open(ctx, &reader_open, &reader_open_thread_handle,
-                                              target, NULL, font_size);
+                        if (ui_shelf_flow_prepare_resume(ctx, target, sizeof(target), &font_size,
+                                                         loading_title, sizeof(loading_title),
+                                                         status, sizeof(status))) {
+                            ui_reader_flow_begin_reader_open(ctx, &reader_open,
+                                                             &reader_open_thread_handle,
+                                                             target, NULL, font_size);
                             if (reader_open.running || reader_open_thread_handle) {
                                 view = VIEW_OPENING;
+                                render_requested = 1;
                                 ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 60);
                             }
                         }
                     } else if (ui_event_is_confirm(&event, tg5040_input) && count > 0) {
-                        cJSON *book = cJSON_GetArrayItem(books, selected);
-                        cJSON *urls = shelf_reader_urls(shelf_nuxt);
-                        const char *target = shelf_reader_target(urls, selected);
-                        const char *book_id = json_get_string(book, "bookId");
-                        if (target) {
-                            /* 正在打开 */
-                            snprintf(loading_title, sizeof(loading_title), "\xE6\xAD\xA3\xE5\x9C\xA8\xE6\x89\x93\xE5\xBC\x80");
-                            /* 正在加载章节... */
-                            snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE5\x8A\xA0\xE8\xBD\xBD\xE7\xAB\xA0\xE8\x8A\x82...");
-                            begin_reader_open(ctx, &reader_open, &reader_open_thread_handle,
-                                              target, book_id, 3);
+                        char target[2048];
+                        char book_id[256];
+
+                        if (ui_shelf_flow_prepare_selected_open(shelf_nuxt, selected,
+                                                                target, sizeof(target),
+                                                                book_id, sizeof(book_id),
+                                                                loading_title, sizeof(loading_title),
+                                                                status, sizeof(status),
+                                                                shelf_status, sizeof(shelf_status))) {
+                            ui_reader_flow_begin_reader_open(ctx, &reader_open,
+                                                             &reader_open_thread_handle,
+                                                             target, book_id[0] ? book_id : NULL,
+                                                             3);
                             if (reader_open.running || reader_open_thread_handle) {
                                 view = VIEW_OPENING;
+                                render_requested = 1;
                                 ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 60);
                             } else {
                                 /* 无法启动加载任务 */
                                 snprintf(shelf_status, sizeof(shelf_status),
                                          "\xE6\x97\xA0\xE6\xB3\x95\xE5\x90\xAF\xE5\x8A\xA8\xE5\x8A\xA0\xE8\xBD\xBD\xE4\xBB\xBB\xE5\x8A\xA1");
                             }
-                        } else {
-                            /* 无法打开所选书籍 */
-                            snprintf(shelf_status, sizeof(shelf_status),
-                                     "\xE6\x97\xA0\xE6\xB3\x95\xE6\x89\x93\xE5\xBC\x80\xE6\x89\x80\xE9\x80\x89\xE4\xB9\xA6\xE7\xB1\x8D");
                         }
                     }
                 } else if (view == VIEW_LOGIN) {
@@ -3724,8 +2617,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                          ui_event_is_keydown(&event, SDLK_l)) &&
                         !login_start.running && !login_active) {
                         if (qr_texture) { SDL_DestroyTexture(qr_texture); qr_texture = NULL; }
-                        begin_login_flow(ctx, &login_start, &login_thread, &view,
-                                         status, sizeof(status), qr_path);
+                        ui_startup_login_begin_login_flow(ctx, &login_start, &login_thread, &view,
+                                                          status, sizeof(status), qr_path);
                         ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 60);
                     }
                 } else if (view == VIEW_BOOTSTRAP) {
@@ -3735,7 +2628,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         snprintf(loading_title, sizeof(loading_title), "\xE5\xBE\xAE\xE4\xBF\xA1\xE8\xAF\xBB\xE4\xB9\xA6");
                         /* 正在重试... */
                         snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE9\x87\x8D\xE8\xAF\x95...");
-                        begin_startup_refresh(ctx, &startup_state, &startup_thread_handle);
+                        ui_startup_login_begin_startup_refresh(ctx, &startup_state,
+                                                               &startup_thread_handle);
                         ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 60);
                     }
                 } else if (view == VIEW_OPENING) {
@@ -3744,15 +2638,17 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         reader_open.source_target[0]) {
                         /* 正在重试... */
                         snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE9\x87\x8D\xE8\xAF\x95...");
-                        begin_reader_open(ctx, &reader_open, &reader_open_thread_handle,
-                                          reader_open.source_target,
-                                          reader_open.book_id[0] ? reader_open.book_id : NULL,
-                                          reader_open.font_size);
+                        ui_reader_flow_begin_reader_open(ctx, &reader_open,
+                                                         &reader_open_thread_handle,
+                                                         reader_open.source_target,
+                                                         reader_open.book_id[0] ?
+                                                         reader_open.book_id : NULL,
+                                                         reader_open.font_size);
                         ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 60);
                     }
                 } else if (view == VIEW_READER) {
-                    int total_pages = reader_total_pages(&reader_state);
-                    reader_progress_note_activity(&reader_state, SDL_GetTicks());
+                    int total_pages = ui_reader_view_total_pages(&reader_state);
+                    ui_reader_view_note_progress_activity(&reader_state, SDL_GetTicks());
                     if (reader_state.catalog_open) {
                         if (ui_event_is_back(&event, tg5040_input) ||
                             ui_event_is_catalog_toggle(&event, tg5040_input)) {
@@ -3762,8 +2658,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                             if (reader_state.catalog_selected > 0) {
                                 reader_state.catalog_selected--;
                                 ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 25);
-                            } else if (reader_expand_catalog_for_selection(ctx, &reader_state, -1,
-                                                                          shelf_status, sizeof(shelf_status)) > 0) {
+                            } else if (ui_reader_view_expand_catalog_for_selection(ctx, &reader_state, -1,
+                                                                                   shelf_status, sizeof(shelf_status)) > 0) {
                                 reader_state.catalog_selected--;
                                 ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 25);
                             }
@@ -3771,8 +2667,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                             if (reader_state.catalog_selected + 1 < reader_state.doc.catalog_count) {
                                 reader_state.catalog_selected++;
                                 ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 25);
-                            } else if (reader_expand_catalog_for_selection(ctx, &reader_state, 1,
-                                                                          shelf_status, sizeof(shelf_status)) > 0 &&
+                            } else if (ui_reader_view_expand_catalog_for_selection(ctx, &reader_state, 1,
+                                                                                   shelf_status, sizeof(shelf_status)) > 0 &&
                                        reader_state.catalog_selected + 1 < reader_state.doc.catalog_count) {
                                 reader_state.catalog_selected++;
                                 ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 25);
@@ -3784,8 +2680,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                     reader_state.catalog_selected = 0;
                                 }
                                 ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 25);
-                            } else if (reader_expand_catalog_for_selection(ctx, &reader_state, -1,
-                                                                          shelf_status, sizeof(shelf_status)) > 0) {
+                            } else if (ui_reader_view_expand_catalog_for_selection(ctx, &reader_state, -1,
+                                                                                   shelf_status, sizeof(shelf_status)) > 0) {
                                 reader_state.catalog_selected -= 10;
                                 if (reader_state.catalog_selected < 0) {
                                     reader_state.catalog_selected = 0;
@@ -3799,8 +2695,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                     reader_state.catalog_selected = reader_state.doc.catalog_count - 1;
                                 }
                                 ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 25);
-                            } else if (reader_expand_catalog_for_selection(ctx, &reader_state, 1,
-                                                                          shelf_status, sizeof(shelf_status)) > 0) {
+                            } else if (ui_reader_view_expand_catalog_for_selection(ctx, &reader_state, 1,
+                                                                                   shelf_status, sizeof(shelf_status)) > 0) {
                                 reader_state.catalog_selected += 10;
                                 if (reader_state.catalog_selected >= reader_state.doc.catalog_count) {
                                     reader_state.catalog_selected = reader_state.doc.catalog_count - 1;
@@ -3819,13 +2715,13 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                             if (item->target && item->target[0]) {
                                 snprintf(source_target, sizeof(source_target), "%s",
                                          reader_state.source_target);
-                                reader_progress_flush_blocking(ctx, &reader_state, 1);
-                                if (reader_view_load(ctx, body_font, item->target, font_size,
-                                                     current_layout.reader_content_w,
-                                                     current_layout.reader_content_h, 0,
-                                                     &reader_state) == 0) {
-                                    reader_set_source_target(&reader_state, source_target);
-                                    reader_save_local_position(ctx, &reader_state);
+                                ui_reader_view_flush_progress_blocking(ctx, &reader_state, 1);
+                                if (ui_reader_view_load(ctx, body_font, item->target, font_size,
+                                                        current_layout.reader_content_w,
+                                                        current_layout.reader_content_h, 0,
+                                                        &reader_state) == 0) {
+                                    ui_reader_view_set_source_target(&reader_state, source_target);
+                                    ui_reader_view_save_local_position(ctx, &reader_state);
                                     reader_state.catalog_open = 0;
                                     shelf_status[0] = '\0';
                                     ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 60);
@@ -3838,14 +2734,14 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         }
                     } else if (ui_event_is_catalog_toggle(&event, tg5040_input) &&
                                reader_state.doc.catalog_count > 0) {
-                        reader_open_catalog(ctx, &reader_state, shelf_status, sizeof(shelf_status));
+                        ui_reader_view_open_catalog(ctx, &reader_state, shelf_status, sizeof(shelf_status));
                         if (reader_state.catalog_open) {
                             ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 50);
                         }
                     } else if (ui_event_is_page_next(&event, tg5040_input) &&
                         reader_state.current_page + 1 < total_pages) {
                         reader_state.current_page++;
-                        reader_save_local_position(ctx, &reader_state);
+                        ui_reader_view_save_local_position(ctx, &reader_state);
                     } else if (ui_event_is_page_next(&event, tg5040_input) &&
                                reader_state.doc.next_target && reader_state.doc.next_target[0]) {
                         char *target = strdup(reader_state.doc.next_target);
@@ -3853,18 +2749,19 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         int font_size = reader_state.doc.font_size;
                         if (target) {
                             snprintf(source_target, sizeof(source_target), "%s", reader_state.source_target);
-                            reader_progress_flush_blocking(ctx, &reader_state, 1);
-                            if (chapter_prefetch_cache_adopt(&chapter_prefetch_cache, target, body_font,
-                                                             &reader_state, &current_layout) == 0) {
-                                reader_set_source_target(&reader_state, source_target);
-                                reader_save_local_position(ctx, &reader_state);
+                            ui_reader_view_flush_progress_blocking(ctx, &reader_state, 1);
+                            if (ui_reader_flow_chapter_prefetch_cache_adopt(
+                                    &chapter_prefetch_cache, target, body_font,
+                                    &reader_state, &current_layout) == 0) {
+                                ui_reader_view_set_source_target(&reader_state, source_target);
+                                ui_reader_view_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
-                            } else if (reader_view_load(ctx, body_font, target, font_size,
-                                                        current_layout.reader_content_w,
-                                                        current_layout.reader_content_h, 0,
-                                                        &reader_state) == 0) {
-                                    reader_set_source_target(&reader_state, source_target);
-                                reader_save_local_position(ctx, &reader_state);
+                            } else if (ui_reader_view_load(ctx, body_font, target, font_size,
+                                                           current_layout.reader_content_w,
+                                                           current_layout.reader_content_h, 0,
+                                                           &reader_state) == 0) {
+                                ui_reader_view_set_source_target(&reader_state, source_target);
+                                ui_reader_view_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
                             } else {
                                 /* 无法打开下一章 */
@@ -3875,7 +2772,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         }
                     } else if (ui_event_is_page_prev(&event, tg5040_input) && reader_state.current_page > 0) {
                         reader_state.current_page--;
-                        reader_save_local_position(ctx, &reader_state);
+                        ui_reader_view_save_local_position(ctx, &reader_state);
                     } else if (ui_event_is_page_prev(&event, tg5040_input) &&
                                reader_state.doc.prev_target && reader_state.doc.prev_target[0]) {
                         char *target = strdup(reader_state.doc.prev_target);
@@ -3883,22 +2780,23 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         int font_size = reader_state.doc.font_size;
                         if (target) {
                             snprintf(source_target, sizeof(source_target), "%s", reader_state.source_target);
-                            reader_progress_flush_blocking(ctx, &reader_state, 1);
-                            if (chapter_prefetch_cache_adopt(&chapter_prefetch_cache, target, body_font,
-                                                             &reader_state, &current_layout) == 0) {
-                                reader_set_source_target(&reader_state, source_target);
-                                int new_total_pages = reader_total_pages(&reader_state);
+                            ui_reader_view_flush_progress_blocking(ctx, &reader_state, 1);
+                            if (ui_reader_flow_chapter_prefetch_cache_adopt(
+                                    &chapter_prefetch_cache, target, body_font,
+                                    &reader_state, &current_layout) == 0) {
+                                ui_reader_view_set_source_target(&reader_state, source_target);
+                                int new_total_pages = ui_reader_view_total_pages(&reader_state);
                                 reader_state.current_page = new_total_pages > 0 ? new_total_pages - 1 : 0;
-                                reader_save_local_position(ctx, &reader_state);
+                                ui_reader_view_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
-                            } else if (reader_view_load(ctx, body_font, target, font_size,
-                                                         current_layout.reader_content_w,
-                                                         current_layout.reader_content_h, 0,
-                                                         &reader_state) == 0) {
-                                reader_set_source_target(&reader_state, source_target);
-                                int new_total_pages = reader_total_pages(&reader_state);
+                            } else if (ui_reader_view_load(ctx, body_font, target, font_size,
+                                                            current_layout.reader_content_w,
+                                                            current_layout.reader_content_h, 0,
+                                                            &reader_state) == 0) {
+                                ui_reader_view_set_source_target(&reader_state, source_target);
+                                int new_total_pages = ui_reader_view_total_pages(&reader_state);
                                 reader_state.current_page = new_total_pages > 0 ? new_total_pages - 1 : 0;
-                                reader_save_local_position(ctx, &reader_state);
+                                ui_reader_view_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
                             } else {
                                 /* 无法打开上一章 */
@@ -3911,7 +2809,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                 ui_event_is_chapter_next(&event, tg5040_input)) &&
                                reader_state.current_page > 0) {
                         reader_state.current_page = 0;
-                        reader_save_local_position(ctx, &reader_state);
+                        ui_reader_view_save_local_position(ctx, &reader_state);
                         ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 50);
                     } else if (ui_event_is_chapter_prev(&event, tg5040_input) &&
                                reader_state.doc.prev_target && reader_state.doc.prev_target[0]) {
@@ -3920,19 +2818,20 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         int font_size = reader_state.doc.font_size;
                         if (target) {
                             snprintf(source_target, sizeof(source_target), "%s", reader_state.source_target);
-                            reader_progress_flush_blocking(ctx, &reader_state, 1);
-                            if (chapter_prefetch_cache_adopt(&chapter_prefetch_cache, target, body_font,
-                                                             &reader_state, &current_layout) == 0) {
-                                reader_set_source_target(&reader_state, source_target);
-                                reader_save_local_position(ctx, &reader_state);
+                            ui_reader_view_flush_progress_blocking(ctx, &reader_state, 1);
+                            if (ui_reader_flow_chapter_prefetch_cache_adopt(
+                                    &chapter_prefetch_cache, target, body_font,
+                                    &reader_state, &current_layout) == 0) {
+                                ui_reader_view_set_source_target(&reader_state, source_target);
+                                ui_reader_view_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
                                 ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_EMPHASIS_MS, 80);
-                            } else if (reader_view_load(ctx, body_font, target, font_size,
-                                                         current_layout.reader_content_w,
-                                                         current_layout.reader_content_h, 0,
-                                                         &reader_state) == 0) {
-                                reader_set_source_target(&reader_state, source_target);
-                                reader_save_local_position(ctx, &reader_state);
+                            } else if (ui_reader_view_load(ctx, body_font, target, font_size,
+                                                            current_layout.reader_content_w,
+                                                            current_layout.reader_content_h, 0,
+                                                            &reader_state) == 0) {
+                                ui_reader_view_set_source_target(&reader_state, source_target);
+                                ui_reader_view_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
                                 ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_EMPHASIS_MS, 80);
                             } else {
@@ -3949,19 +2848,20 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         int font_size = reader_state.doc.font_size;
                         if (target) {
                             snprintf(source_target, sizeof(source_target), "%s", reader_state.source_target);
-                            reader_progress_flush_blocking(ctx, &reader_state, 1);
-                            if (chapter_prefetch_cache_adopt(&chapter_prefetch_cache, target, body_font,
-                                                             &reader_state, &current_layout) == 0) {
-                                reader_set_source_target(&reader_state, source_target);
-                                reader_save_local_position(ctx, &reader_state);
+                            ui_reader_view_flush_progress_blocking(ctx, &reader_state, 1);
+                            if (ui_reader_flow_chapter_prefetch_cache_adopt(
+                                    &chapter_prefetch_cache, target, body_font,
+                                    &reader_state, &current_layout) == 0) {
+                                ui_reader_view_set_source_target(&reader_state, source_target);
+                                ui_reader_view_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
                                 ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_EMPHASIS_MS, 80);
-                            } else if (reader_view_load(ctx, body_font, target, font_size,
-                                                        current_layout.reader_content_w,
-                                                        current_layout.reader_content_h, 0,
-                                                        &reader_state) == 0) {
-                                    reader_set_source_target(&reader_state, source_target);
-                                reader_save_local_position(ctx, &reader_state);
+                            } else if (ui_reader_view_load(ctx, body_font, target, font_size,
+                                                           current_layout.reader_content_w,
+                                                           current_layout.reader_content_h, 0,
+                                                           &reader_state) == 0) {
+                                ui_reader_view_set_source_target(&reader_state, source_target);
+                                ui_reader_view_save_local_position(ctx, &reader_state);
                                 shelf_status[0] = '\0';
                                 ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_EMPHASIS_MS, 80);
                             } else {
@@ -3986,27 +2886,16 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                             reader_state.content_font_size += 4;
                             if (reader_state.content_font_size > 44) reader_state.content_font_size = 24;
                         }
-                        if (reader_reset_content_font(body_font, &reader_state) != 0) {
+                        if (ui_reader_view_reset_content_font(body_font, &reader_state) != 0) {
                             /* 无法应用字体大小 */
                             snprintf(shelf_status, sizeof(shelf_status),
                                      "\xE6\x97\xA0\xE6\xB3\x95\xE5\xBA\x94\xE7\x94\xA8\xE5\xAD\x97\xE4\xBD\x93\xE5\xA4\xA7\xE5\xB0\x8F");
                             continue;
                         }
-                        reader_rewrap(body_font, current_layout.reader_content_w,
-                                      current_layout.reader_content_h, &reader_state);
-                        reader_save_local_position(ctx, &reader_state);
+                        ui_reader_view_rewrap(body_font, current_layout.reader_content_w,
+                                              current_layout.reader_content_h, &reader_state);
+                        ui_reader_view_save_local_position(ctx, &reader_state);
                         ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 45);
-                    } else if (ui_event_is_keydown(&event, SDLK_b)) {
-                        if (reader_exit_confirm_until > frame_now) {
-                            reader_save_local_position(ctx, &reader_state);
-                            reader_exit_confirm_until = 0;
-                            view = VIEW_SHELF;
-                            ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 50);
-                        } else {
-                            reader_exit_confirm_until = frame_now + UI_EXIT_CONFIRM_DURATION_MS;
-                            render_requested = 1;
-                            ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
-                        }
                     }
                 }
             }
@@ -4039,37 +2928,153 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
             }
         }
 
+        if (view == VIEW_LOGIN) {
+            int login_confirm_held =
+                ui_login_confirm_is_held(tg5040_input, joysticks, joystick_count);
+            int login_back_held = ui_login_back_is_held(tg5040_input, joysticks, joystick_count);
+
+            if (login_confirm_held &&
+                !login_confirm_latch &&
+                !login_start.running &&
+                !login_active) {
+                if (qr_texture) {
+                    SDL_DestroyTexture(qr_texture);
+                    qr_texture = NULL;
+                }
+                ui_startup_login_begin_login_flow(ctx, &login_start, &login_thread, &view,
+                                                  status, sizeof(status), qr_path);
+                ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 60);
+            }
+            if (login_back_held && !login_back_latch) {
+                login_active = 0;
+                login_poll.stop = 1;
+                ui_force_exit_from_login(&haptic_state);
+            }
+            login_confirm_latch = login_confirm_held;
+            login_back_latch = login_back_held;
+        } else {
+            login_confirm_latch = 0;
+            login_back_latch = 0;
+        }
+
+        if (view == VIEW_SHELF) {
+            cJSON *books = shelf_nuxt ? shelf_books(shelf_nuxt) : NULL;
+            int count = books && cJSON_IsArray(books) ? cJSON_GetArraySize(books) : 0;
+            int shelf_back_held = ui_login_back_is_held(tg5040_input, joysticks, joystick_count);
+            int shelf_confirm_held =
+                ui_login_confirm_is_held(tg5040_input, joysticks, joystick_count);
+            int shelf_resume_held =
+                ui_shelf_resume_is_held(tg5040_input, joysticks, joystick_count);
+            int shelf_next_held =
+                ui_input_is_down_held(tg5040_input, joysticks, joystick_count) ||
+                ui_input_is_right_held(tg5040_input, joysticks, joystick_count);
+            int shelf_prev_held =
+                ui_input_is_up_held(tg5040_input, joysticks, joystick_count) ||
+                ui_input_is_left_held(tg5040_input, joysticks, joystick_count);
+
+            if (shelf_back_blocked && !shelf_back_held) {
+                shelf_back_blocked = 0;
+            }
+            if (!shelf_nav_event_seen && shelf_next_held && !shelf_next_latch &&
+                count > 0 && selected + 1 < count) {
+                selected++;
+                render_requested = 1;
+                ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 25);
+            } else if (!shelf_nav_event_seen && shelf_prev_held && !shelf_prev_latch &&
+                       selected > 0) {
+                selected--;
+                render_requested = 1;
+                ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 25);
+            }
+            if (!shelf_resume_event_seen && shelf_resume_held && !shelf_resume_latch) {
+                char target[2048];
+                int font_size = 3;
+
+                if (ui_shelf_flow_prepare_resume(ctx, target, sizeof(target), &font_size,
+                                                 loading_title, sizeof(loading_title),
+                                                 status, sizeof(status))) {
+                    ui_reader_flow_begin_reader_open(ctx, &reader_open,
+                                                     &reader_open_thread_handle,
+                                                     target, NULL, font_size);
+                    if (reader_open.running || reader_open_thread_handle) {
+                        view = VIEW_OPENING;
+                        render_requested = 1;
+                        ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 60);
+                    }
+                }
+            } else if (!shelf_confirm_event_seen && shelf_confirm_held &&
+                       !shelf_confirm_latch && count > 0) {
+                char target[2048];
+                char book_id[256];
+
+                if (ui_shelf_flow_prepare_selected_open(shelf_nuxt, selected,
+                                                        target, sizeof(target),
+                                                        book_id, sizeof(book_id),
+                                                        loading_title, sizeof(loading_title),
+                                                        status, sizeof(status),
+                                                        shelf_status, sizeof(shelf_status))) {
+                    ui_reader_flow_begin_reader_open(ctx, &reader_open,
+                                                     &reader_open_thread_handle,
+                                                     target, book_id[0] ? book_id : NULL,
+                                                     3);
+                    if (reader_open.running || reader_open_thread_handle) {
+                        view = VIEW_OPENING;
+                        render_requested = 1;
+                        ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 60);
+                    } else {
+                        snprintf(shelf_status, sizeof(shelf_status),
+                                 "\xE6\x97\xA0\xE6\xB3\x95\xE5\x90\xAF\xE5\x8A\xA8\xE5\x8A\xA0\xE8\xBD\xBD\xE4\xBB\xBB\xE5\x8A\xA1");
+                    }
+                }
+            }
+            if (!shelf_back_event_seen && shelf_back_held && !shelf_back_latch &&
+                !shelf_back_blocked) {
+                exit_confirm_until = SDL_GetTicks() + UI_EXIT_CONFIRM_DURATION_MS;
+                render_requested = 1;
+                ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
+            }
+            shelf_back_latch = shelf_back_held;
+            shelf_confirm_latch = shelf_confirm_held;
+            shelf_resume_latch = shelf_resume_held;
+            shelf_next_latch = shelf_next_held;
+            shelf_prev_latch = shelf_prev_held;
+        } else {
+            shelf_back_latch = 0;
+            shelf_confirm_latch = 0;
+            shelf_resume_latch = 0;
+            shelf_next_latch = 0;
+            shelf_prev_latch = 0;
+        }
+
         if (view == VIEW_READER) {
-            reader_progress_update(ctx, &reader_state,
-                                   &progress_report, &progress_report_thread_handle);
-            chapter_prefetch_cache_poll(&chapter_prefetch_cache);
-            chapter_prefetch_cache_update(ctx, &chapter_prefetch_cache, &reader_state);
-        } else if (chapter_prefetch_cache_has_running_work(&chapter_prefetch_cache)) {
-            chapter_prefetch_cache_poll(&chapter_prefetch_cache);
+            ui_reader_flow_tick_reader(ctx, &reader_state, &progress_report,
+                                       &progress_report_thread_handle,
+                                       &chapter_prefetch_cache);
+        } else if (ui_reader_flow_chapter_prefetch_has_running_work(&chapter_prefetch_cache)) {
+            ui_reader_flow_poll_background(&chapter_prefetch_cache);
         }
 
         if (shelf_cover_download_thread_handle) {
-            shelf_cover_download_poll(&shelf_covers, &shelf_cover_download,
-                                      &shelf_cover_download_thread_handle);
+            ui_shelf_flow_cover_download_poll(&shelf_covers, &shelf_cover_download,
+                                              &shelf_cover_download_thread_handle);
         }
         if (view == VIEW_SHELF) {
-            shelf_cover_download_maybe_start(ctx, &shelf_covers, &shelf_cover_download,
-                                             &shelf_cover_download_thread_handle, selected);
+            ui_shelf_flow_cover_download_maybe_start(ctx, &shelf_covers, &shelf_cover_download,
+                                                     &shelf_cover_download_thread_handle, selected);
             if (shelf_cover_prepare_nearest(ctx, renderer, &shelf_covers,
                                             motion_state.shelf_selected_visual)) {
                 render_requested = 1;
             }
         }
 
-        if (startup_thread_handle && !startup_state.running) {
-            SDL_WaitThread(startup_thread_handle, NULL);
-            startup_thread_handle = NULL;
+        if (ui_startup_login_finish_startup(&startup_thread_handle, &startup_state)) {
             render_requested = 1;
             if (startup_state.session_ok == 1 && startup_state.shelf_nuxt) {
                 cJSON_Delete(shelf_nuxt);
                 shelf_nuxt = startup_state.shelf_nuxt;
                 startup_state.shelf_nuxt = NULL;
-                shelf_cover_download_stop(&shelf_cover_download, &shelf_cover_download_thread_handle);
+                ui_shelf_flow_cover_download_stop(&shelf_cover_download,
+                                                  &shelf_cover_download_thread_handle);
                 shelf_cover_cache_build(ctx, shelf_nuxt, &shelf_covers);
                 if (shelf_books(shelf_nuxt) && cJSON_IsArray(shelf_books(shelf_nuxt))) {
                     int count = cJSON_GetArraySize(shelf_books(shelf_nuxt));
@@ -4086,10 +3091,14 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                 }
             } else if (startup_state.session_ok == 0) {
                 view = VIEW_LOGIN;
-                /* 正在生成二维码... */
-                snprintf(status, sizeof(status), "\xE6\xAD\xA3\xE5\x9C\xA8\xE7\x94\x9F\xE6\x88\x90\xE4\xBA\x8C\xE7\xBB\xB4\xE7\xA0\x81...");
-                if (qr_texture) { SDL_DestroyTexture(qr_texture); qr_texture = NULL; }
-                begin_login_flow(ctx, &login_start, &login_thread, &view, status, sizeof(status), qr_path);
+                login_active = 0;
+                memset(&session, 0, sizeof(session));
+                /* 按 A 生成二维码 */
+                snprintf(status, sizeof(status), "\xE6\x8C\x89 A \xE7\x94\x9F\xE6\x88\x90\xE4\xBA\x8C\xE7\xBB\xB4\xE7\xA0\x81");
+                if (qr_texture) {
+                    SDL_DestroyTexture(qr_texture);
+                    qr_texture = NULL;
+                }
             } else if (!shelf_nuxt && view != VIEW_READER && view != VIEW_LOGIN) {
                 /* 网络错误，按 A 重试 */
                 snprintf(status, sizeof(status), "\xE7\xBD\x91\xE7\xBB\x9C\xE9\x94\x99\xE8\xAF\xAF\xEF\xBC\x8C\xE6\x8C\x89 A \xE9\x87\x8D\xE8\xAF\x95");
@@ -4097,62 +3106,18 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
             if (startup_state.poor_network) {
                 poor_network_toast_until = SDL_GetTicks() + 3000;
             }
-            startup_state_reset(&startup_state);
+            ui_startup_login_startup_state_reset(&startup_state);
         }
 
         if (reader_open_thread_handle && !reader_open.running) {
-            SDL_WaitThread(reader_open_thread_handle, NULL);
-            reader_open_thread_handle = NULL;
             render_requested = 1;
-            if (reader_open.poor_network) {
-                poor_network_toast_until = SDL_GetTicks() + 3000;
-            }
-            reader_state.content_font_size = reader_open.content_font_size;
-            if (reader_open.ready &&
-                reader_view_adopt_document(body_font, &reader_open.doc,
-                                           current_layout.reader_content_w,
-                                           current_layout.reader_content_h,
-                                           reader_open.honor_saved_position,
-                                           &reader_state) == 0) {
-                if (!reader_open.honor_saved_position) {
-                    if (reader_open.initial_offset > 0) {
-                        reader_state.current_page =
-                            reader_find_page_for_offset(&reader_state, reader_open.initial_offset);
-                    } else {
-                        reader_state.current_page = reader_open.initial_page;
-                    }
-                    reader_clamp_current_page(&reader_state);
-                }
-                reader_set_source_target(&reader_state, reader_open.source_target);
-                reader_save_local_position(ctx, &reader_state);
-                shelf_status[0] = '\0';
-                status[0] = '\0';
-                view = VIEW_READER;
-            } else if (reader_open.failed || !reader_open.ready) {
-                if (shelf_nuxt) {
-                    view = VIEW_SHELF;
-                    /* 无法打开所选书籍 */
-                    snprintf(shelf_status, sizeof(shelf_status),
-                             "\xE6\x97\xA0\xE6\xB3\x95\xE6\x89\x93\xE5\xBC\x80\xE6\x89\x80\xE9\x80\x89\xE4\xB9\xA6\xE7\xB1\x8D");
-                    reader_open_state_reset(&reader_open);
-                } else {
-                    char retry_target[2048];
-                    char retry_book_id[256];
-                    int retry_font_size = reader_open.font_size;
-                    ui_copy_string(retry_target, sizeof(retry_target), reader_open.source_target);
-                    ui_copy_string(retry_book_id, sizeof(retry_book_id), reader_open.book_id);
-                    reader_open_state_reset(&reader_open);
-                    ui_copy_string(reader_open.source_target, sizeof(reader_open.source_target), retry_target);
-                    ui_copy_string(reader_open.book_id, sizeof(reader_open.book_id), retry_book_id);
-                    reader_open.font_size = retry_font_size;
-                    view = VIEW_OPENING;
-                    /* 打开失败，按 A 重试 */
-                    snprintf(status, sizeof(status),
-                             "\xE6\x89\x93\xE5\xBC\x80\xE5\xA4\xB1\xE8\xB4\xA5\xEF\xBC\x8C\xE6\x8C\x89 A \xE9\x87\x8D\xE8\xAF\x95");
-                }
-            } else {
-                reader_open_state_reset(&reader_open);
-            }
+            (void)ui_reader_flow_finish_open(ctx, body_font, &reader_open,
+                                             &reader_open_thread_handle,
+                                             &reader_state, &view,
+                                             status, sizeof(status),
+                                             shelf_status, sizeof(shelf_status),
+                                             &poor_network_toast_until,
+                                             &current_layout, shelf_nuxt != NULL);
         }
 
         if (!motion_state.shelf_initialized) {
@@ -4199,69 +3164,48 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
             motion_state.view_fade_active = 1;
             motion_state.view_fade_start_tick = SDL_GetTicks();
             motion_state.view_fade_duration_ms = UI_VIEW_FADE_DURATION_MS;
-        }
-
-        if (view == VIEW_LOGIN && login_start.running == 0 && login_thread) {
-            SDL_WaitThread(login_thread, NULL);
-            login_thread = NULL;
-            render_requested = 1;
-            if (login_start.success) {
-                session = login_start.session;
-                /* 二维码已生成，等待扫码确认... */
-                snprintf(status, sizeof(status), "\xE4\xBA\x8C\xE7\xBB\xB4\xE7\xA0\x81\xE5\xB7\xB2\xE7\x94\x9F\xE6\x88\x90\xEF\xBC\x8C\xE7\xAD\x89\xE5\xBE\x85\xE6\x89\xAB\xE7\xA0\x81\xE7\xA1\xAE\xE8\xAE\xA4...");
-                login_active = 1;
-                last_poll = SDL_GetTicks();
-                memset(&login_poll, 0, sizeof(login_poll));
-                snprintf(login_poll.data_dir, sizeof(login_poll.data_dir), "%s", ctx->data_dir);
-                snprintf(login_poll.ca_file, sizeof(login_poll.ca_file), "%s", ctx->ca_file);
-                login_poll.session = session;
-                login_poll.running = 1;
-                login_poll_thread_handle = SDL_CreateThread(login_poll_thread, "weread-login-poll", &login_poll);
-                if (!login_poll_thread_handle) {
-                    login_poll.running = 0;
-                    login_active = 0;
-                    /* 无法创建登录轮询线程 */
-                    snprintf(status, sizeof(status), "\xE6\x97\xA0\xE6\xB3\x95\xE5\x88\x9B\xE5\xBB\xBA\xE7\x99\xBB\xE5\xBD\x95\xE8\xBD\xAE\xE8\xAF\xA2\xE7\xBA\xBF\xE7\xA8\x8B");
+            if (frame_view_before_updates != view) {
+                if (view == VIEW_SHELF &&
+                    (frame_view_before_updates == VIEW_READER ||
+                     frame_view_before_updates == VIEW_OPENING)) {
+                    shelf_back_blocked = 1;
                 }
-            } else if (login_start.failed) {
-                /* 二维码生成失败 */
-                snprintf(status, sizeof(status), "\xE4\xBA\x8C\xE7\xBB\xB4\xE7\xA0\x81\xE7\x94\x9F\xE6\x88\x90\xE5\xA4\xB1\xE8\xB4\xA5");
+                ui_reset_transient_input_state(&repeat_state,
+                                               &tg5040_select_pressed,
+                                               &tg5040_start_pressed,
+                                               &exit_confirm_until,
+                                               &reader_exit_confirm_until);
             }
         }
 
+        if (view == VIEW_LOGIN) {
+            (void)ui_startup_login_finish_login_start(ctx, &login_start, &login_thread,
+                                                      &login_poll, &login_poll_thread_handle,
+                                                      &session, &last_poll, &login_active,
+                                                      status, sizeof(status),
+                                                      &render_requested);
+        }
+
         if (view == VIEW_LOGIN && login_active) {
-            if (login_poll.running) {
-                if (SDL_GetTicks() - last_poll > 1200) {
-                    render_requested = 1;
-                    if (login_poll.last_status == AUTH_POLL_SCANNED) {
-                        /* 已扫码，等待确认... */
-                        snprintf(status, sizeof(status), "\xE5\xB7\xB2\xE6\x89\xAB\xE7\xA0\x81\xEF\xBC\x8C\xE7\xAD\x89\xE5\xBE\x85\xE7\xA1\xAE\xE8\xAE\xA4...");
-                    } else {
-                        /* 等待扫码或确认... */
-                        snprintf(status, sizeof(status), "\xE7\xAD\x89\xE5\xBE\x85\xE6\x89\xAB\xE7\xA0\x81\xE6\x88\x96\xE7\xA1\xAE\xE8\xAE\xA4...");
-                    }
-                    last_poll = SDL_GetTicks();
-                }
-            } else if (login_poll_thread_handle) {
-                SDL_WaitThread(login_poll_thread_handle, NULL);
-                login_poll_thread_handle = NULL;
-                render_requested = 1;
-                if (login_poll.completed) {
-                    cJSON_Delete(shelf_nuxt);
-                    shelf_nuxt = shelf_load(ctx, 1, NULL);
-                    shelf_cover_download_stop(&shelf_cover_download, &shelf_cover_download_thread_handle);
-                    shelf_cover_cache_build(ctx, shelf_nuxt, &shelf_covers);
-                    selected = 0;
-                    shelf_start = 0;
-                    shelf_status[0] = '\0';
-                    status[0] = '\0';
-                    login_active = 0;
-                    view = VIEW_SHELF;
-                } else {
-                    /* 登录等待已停止 */
-                    snprintf(status, sizeof(status), "\xE7\x99\xBB\xE5\xBD\x95\xE7\xAD\x89\xE5\xBE\x85\xE5\xB7\xB2\xE5\x81\x9C\xE6\xAD\xA2");
-                    login_active = 0;
-                }
+            int login_result =
+                ui_startup_login_poll_login(&login_poll, &login_poll_thread_handle,
+                                            &last_poll, status, sizeof(status),
+                                            &render_requested);
+
+            if (login_result == 1) {
+                cJSON_Delete(shelf_nuxt);
+                shelf_nuxt = shelf_load(ctx, 1, NULL);
+                ui_shelf_flow_cover_download_stop(&shelf_cover_download,
+                                                  &shelf_cover_download_thread_handle);
+                shelf_cover_cache_build(ctx, shelf_nuxt, &shelf_covers);
+                selected = 0;
+                shelf_start = 0;
+                shelf_status[0] = '\0';
+                status[0] = '\0';
+                login_active = 0;
+                view = VIEW_SHELF;
+            } else if (login_result < 0) {
+                login_active = 0;
             }
         }
 
@@ -4371,7 +3315,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                     login_poll_thread_handle ||
                     shelf_cover_download_thread_handle ||
                     progress_report_thread_handle ||
-                    chapter_prefetch_cache_has_running_work(&chapter_prefetch_cache);
+                    ui_reader_flow_chapter_prefetch_has_running_work(&chapter_prefetch_cache);
                 int wait_timeout_ms = 0;
                 SDL_Event waited_event;
 
@@ -4429,37 +3373,22 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     rc = 0;
 
 cleanup:
+    ui_platform_shutdown_haptics(&haptic_state);
     if (view == VIEW_READER) {
-        reader_progress_flush_blocking(ctx, &reader_state, 1);
-        reader_save_local_position(ctx, &reader_state);
+        ui_reader_view_flush_progress_blocking(ctx, &reader_state, 1);
+        ui_reader_view_save_local_position(ctx, &reader_state);
     }
-    if (login_thread) {
-        SDL_WaitThread(login_thread, NULL);
-    }
-    if (startup_thread_handle) {
-        SDL_WaitThread(startup_thread_handle, NULL);
-    }
-    if (reader_open_thread_handle) {
-        SDL_WaitThread(reader_open_thread_handle, NULL);
-    }
-    if (shelf_cover_download_thread_handle) {
-        SDL_WaitThread(shelf_cover_download_thread_handle, NULL);
-    }
-    if (login_poll_thread_handle) {
-        login_poll.stop = 1;
-        SDL_WaitThread(login_poll_thread_handle, NULL);
-    }
-    if (progress_report_thread_handle) {
-        SDL_WaitThread(progress_report_thread_handle, NULL);
-    }
-    chapter_prefetch_cache_reset(&chapter_prefetch_cache);
-    progress_report_state_reset(&progress_report);
+    ui_startup_login_shutdown(&login_poll, &login_thread, &startup_thread_handle,
+                              &login_poll_thread_handle);
+    ui_shelf_flow_cover_download_stop(&shelf_cover_download,
+                                      &shelf_cover_download_thread_handle);
+    ui_reader_flow_shutdown(&reader_open, &reader_open_thread_handle,
+                            &progress_report, &progress_report_thread_handle,
+                            &chapter_prefetch_cache);
     reader_view_free(&reader_state);
-    reader_open_state_reset(&reader_open);
-    startup_state_reset(&startup_state);
+    ui_startup_login_startup_state_reset(&startup_state);
     shelf_cover_cache_reset(&shelf_covers);
     cJSON_Delete(shelf_nuxt);
-    ui_platform_shutdown_haptics(&haptic_state);
     if (body_font) {
         TTF_CloseFont(body_font);
     }

@@ -10,6 +10,18 @@ TOOLCHAIN_URL="${TOOLCHAIN_URL:-https://developer.arm.com/-/media/Files/download
 DOWNLOAD_DIR="$DEST_ROOT/downloads"
 ARCHIVE_PATH="$DOWNLOAD_DIR/${TOOLCHAIN_BASENAME}.tar.xz"
 INSTALL_ROOT="$DEST_ROOT/${TOOLCHAIN_BASENAME}"
+TOOLCHAIN_SHA256="${TOOLCHAIN_SHA256:-1e33d53dea59c8de823bbdfe0798280bdcd138636c7060da9d77a97ded095a84}"
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "missing required command: $1" >&2
+    exit 1
+  }
+}
+
+need_cmd curl
+need_cmd tar
+need_cmd shasum
 
 mkdir -p "$DOWNLOAD_DIR"
 
@@ -18,6 +30,8 @@ if [[ ! -d "$INSTALL_ROOT/bin" ]]; then
     echo "[tg5040-toolchain] downloading ${TOOLCHAIN_BASENAME}.tar.xz"
     curl -L "$TOOLCHAIN_URL" -o "$ARCHIVE_PATH"
   fi
+
+  printf '%s  %s\n' "$TOOLCHAIN_SHA256" "$ARCHIVE_PATH" | shasum -a 256 -c -
 
   echo "[tg5040-toolchain] extracting to $DEST_ROOT"
   rm -rf "$INSTALL_ROOT"

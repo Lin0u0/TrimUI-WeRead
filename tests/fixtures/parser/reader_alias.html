@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <body>
+    <script>
+      window.__NUXT__=(function(a,b,c,d){
+        return {
+          reader:{bookId:a,title:b,chapterUid:c,toc:d}
+        }
+      }("book-1","Chapter Alias 1",101,[{chapterUid:"101",title:"Start"},{chapterUid:"102",title:"Next"}]));
+    </script>
+    <script>
+      var readerData = {
+        title:b,
+        chapterUid:c,
+        toc:[{chapterUid:"101",title:"Start"},{chapterUid:"102",title:"Next"}],
+        nested:{title:"nested-title"}
+      };
+    </script>
+  </body>
+</html>

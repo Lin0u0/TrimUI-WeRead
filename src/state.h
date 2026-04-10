@@ -3,26 +3,17 @@
 
 #include "api.h"
 
+/*
+ * Protected runtime-contract filenames for persisted state.
+ * Phase 1 may clarify code ownership around these names, but must keep the
+ * concrete on-disk values stable for existing installs and launchers.
+ */
+#define STATE_FILE_SHELF "shelf.json"
+#define STATE_FILE_LAST_READER "last-reader.json"
+#define STATE_FILE_READER_POSITIONS "reader-positions.json"
+#define STATE_FILE_PREFERENCES "preferences.json"
+
 int state_write_json(ApiContext *ctx, const char *name, cJSON *json);
 cJSON *state_read_json(ApiContext *ctx, const char *name);
-int state_save_last_reader(ApiContext *ctx, const char *target, int font_size, int content_font_size);
-int state_load_last_reader(ApiContext *ctx, char *target, size_t target_size, int *font_size,
-                           int *content_font_size);
-int state_save_reader_position(ApiContext *ctx, const char *book_id, const char *source_target,
-                               const char *target, int font_size, int content_font_size,
-                               int current_page, int current_offset);
-int state_load_reader_position(ApiContext *ctx, const char *book_id, const char *source_target,
-                               char *target, size_t target_size, int *font_size,
-                               int *content_font_size,
-                               int *current_page, int *current_offset);
-int state_load_reader_position_by_book_id(ApiContext *ctx, const char *book_id,
-                                          char *source_target, size_t source_target_size,
-                                          char *target, size_t target_size,
-                                          int *font_size, int *content_font_size,
-                                          int *current_page, int *current_offset);
-int state_save_dark_mode(ApiContext *ctx, int dark_mode);
-int state_load_dark_mode(ApiContext *ctx);
-int state_save_brightness_level(ApiContext *ctx, int brightness_level);
-int state_load_brightness_level(ApiContext *ctx, int *brightness_level);
 
 #endif

@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include "shelf.h"
 #include "json.h"
-#include "state.h"
+#include "shelf_state.h"
 
 static int shelf_extend_from_api(ApiContext *ctx, cJSON *nuxt) {
     cJSON *shelf = json_get_path(nuxt, "state.shelf");
@@ -159,13 +159,13 @@ cJSON *shelf_load(ApiContext *ctx, int allow_cache, int *from_cache) {
     }
     if (nuxt) {
         shelf_extend_from_api(ctx, nuxt);
-        state_write_json(ctx, "shelf.json", nuxt);
+        shelf_state_save_cache(ctx, nuxt);
         return nuxt;
     }
     if (!allow_cache) {
         return NULL;
     }
-    nuxt = state_read_json(ctx, "shelf.json");
+    nuxt = shelf_state_load_cache(ctx);
     if (nuxt && from_cache) {
         *from_cache = 1;
     }
@@ -185,7 +185,7 @@ int shelf_print(ApiContext *ctx) {
 }
 
 int shelf_print_cached(ApiContext *ctx) {
-    cJSON *nuxt = state_read_json(ctx, "shelf.json");
+    cJSON *nuxt = shelf_state_load_cache(ctx);
     int rc;
 
     if (!nuxt) {

@@ -62,6 +62,8 @@ main() {
   need_cmd curl
   need_cmd shasum
   need_cmd tar
+  need_cmd make
+  need_cmd pkg-config
   need_cmd "$CC"
 
   [[ -d "$SDK_USR/include" ]] || {

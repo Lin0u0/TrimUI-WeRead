@@ -20,3 +20,7 @@ state/
 # Editor / tooling
 .idea/
 .vscode/
+
+# Local GSD planning workspace
+.planning/
+CLAUDE.md

@@ -10,62 +10,6 @@
 #include "reader_internal.h"
 #include "json.h"
 
-/* ====================== Basic String Utilities ====================== */
-
-const char *reader_skip_ws(const char *p, const char *end) {
-    while (p < end && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) {
-        p++;
-    }
-    return p;
-}
-
-const char *reader_find_matching_pair(const char *start, const char *end, char open_ch, char close_ch) {
-    int depth = 0;
-    int in_string = 0;
-    char quote = 0;
-
-    for (const char *p = start; p < end; p++) {
-        if (in_string) {
-            if (*p == '\\' && p + 1 < end) {
-                p++;
-                continue;
-            }
-            if (*p == quote) {
-                in_string = 0;
-            }
-            continue;
-        }
-
-        if (*p == '"' || *p == '\'') {
-            in_string = 1;
-            quote = *p;
-            continue;
-        }
-
-        if (*p == open_ch) {
-            depth++;
-        } else if (*p == close_ch) {
-            depth--;
-            if (depth == 0) {
-                return p;
-            }
-        }
-    }
-
-    return NULL;
-}
-
-char *reader_dup_range(const char *start, const char *end) {
-    size_t len = (size_t)(end - start);
-    char *copy = malloc(len + 1);
-    if (!copy) {
-        return NULL;
-    }
-    memcpy(copy, start, len);
-    copy[len] = '\0';
-    return copy;
-}
-
 char *reader_dup_or_null(const char *s) {
     return s ? strdup(s) : NULL;
 }
@@ -170,7 +114,7 @@ const char *reader_find_top_level_field(const char *slice_start, const char *sli
 /* ====================== JS Literal Parsing ====================== */
 
 static int parse_js_literal_for_alias(const char **cursor, const char *end, char **out_literal) {
-    const char *p = reader_skip_ws(*cursor, end);
+    const char *p = parser_skip_ws(*cursor, end);
     const char *start;
 
     if (p >= end) {
@@ -188,7 +132,7 @@ static int parse_js_literal_for_alias(const char **cursor, const char *end, char
             }
             if (*p == quote) {
                 p++;
-                *out_literal = reader_dup_range(start, p);
+                *out_literal = parser_dup_range(start, p);
                 *cursor = p;
                 return *out_literal ? 0 : -1;
             }
@@ -214,12 +158,12 @@ static int parse_js_literal_for_alias(const char **cursor, const char *end, char
         return *out_literal ? 0 : -1;
     }
     if (strncmp(p, "true", 4) == 0 || strncmp(p, "null", 4) == 0) {
-        *out_literal = reader_dup_range(p, p + 4);
+        *out_literal = parser_dup_range(p, p + 4);
         *cursor = p + 4;
         return *out_literal ? 0 : -1;
     }
     if (strncmp(p, "false", 5) == 0) {
-        *out_literal = reader_dup_range(p, p + 5);
+        *out_literal = parser_dup_range(p, p + 5);
         *cursor = p + 5;
         return *out_literal ? 0 : -1;
     }
@@ -238,7 +182,7 @@ static int parse_js_literal_for_alias(const char **cursor, const char *end, char
 
     /* Object literal - skip */
     if (*p == '{') {
-        const char *close = reader_find_matching_pair(p, end, '{', '}');
+        const char *close = parser_find_matching_pair(p, end, '{', '}');
         if (!close) {
             return -1;
         }
@@ -249,7 +193,7 @@ static int parse_js_literal_for_alias(const char **cursor, const char *end, char
 
     /* Array literal - skip */
     if (*p == '[') {
-        const char *close = reader_find_matching_pair(p, end, '[', ']');
+        const char *close = parser_find_matching_pair(p, end, '[', ']');
         if (!close) {
             return -1;
         }
@@ -276,7 +220,7 @@ static int parse_js_literal_for_alias(const char **cursor, const char *end, char
                 p++;
             }
         }
-        *out_literal = reader_dup_range(start, p);
+        *out_literal = parser_dup_range(start, p);
         *cursor = p;
         return *out_literal ? 0 : -1;
     }
@@ -288,7 +232,7 @@ static int parse_js_literal_for_alias(const char **cursor, const char *end, char
         while (p < end && is_js_ident_char(*p)) {
             p++;
         }
-        *out_literal = reader_dup_range(start, p);
+        *out_literal = parser_dup_range(start, p);
         *cursor = p;
         return *out_literal ? 0 : -1;
     }
@@ -333,12 +277,12 @@ char *reader_resolve_nuxt_alias_string(const char *html, const char *alias) {
     if (!body_start) {
         return NULL;
     }
-    body_end = reader_find_matching_pair(body_start, end, '{', '}');
+    body_end = parser_find_matching_pair(body_start, end, '{', '}');
     if (!body_end) {
         return NULL;
     }
 
-    params_copy = reader_dup_range(params_start, params_end);
+    params_copy = parser_dup_range(params_start, params_end);
     if (!params_copy) {
         return NULL;
     }
@@ -368,7 +312,7 @@ char *reader_resolve_nuxt_alias_string(const char *html, const char *alias) {
     if (call_start >= end) {
         goto cleanup;
     }
-    call_end = reader_find_matching_pair(call_start, end, '(', ')');
+    call_end = parser_find_matching_pair(call_start, end, '(', ')');
     if (!call_end) {
         goto cleanup;
     }
@@ -379,7 +323,7 @@ char *reader_resolve_nuxt_alias_string(const char *html, const char *alias) {
             char *literal = NULL;
             cJSON *json;
 
-            cursor = reader_skip_ws(cursor, call_end);
+            cursor = parser_skip_ws(cursor, call_end);
             if (cursor >= call_end || parse_js_literal_for_alias(&cursor, call_end, &literal) != 0) {
                 free(literal);
                 goto cleanup;
@@ -406,7 +350,7 @@ char *reader_resolve_nuxt_alias_string(const char *html, const char *alias) {
                 break;
             }
             free(literal);
-            cursor = reader_skip_ws(cursor, call_end);
+            cursor = parser_skip_ws(cursor, call_end);
             if (cursor < call_end && *cursor == ',') {
                 cursor++;
             }
@@ -453,12 +397,12 @@ char *reader_resolve_nuxt_alias_literal(const char *html, const char *alias) {
     if (!body_start) {
         return NULL;
     }
-    body_end = reader_find_matching_pair(body_start, end, '{', '}');
+    body_end = parser_find_matching_pair(body_start, end, '{', '}');
     if (!body_end) {
         return NULL;
     }
 
-    params_copy = reader_dup_range(params_start, params_end);
+    params_copy = parser_dup_range(params_start, params_end);
     if (!params_copy) {
         return NULL;
     }
@@ -488,7 +432,7 @@ char *reader_resolve_nuxt_alias_literal(const char *html, const char *alias) {
     if (call_start >= end) {
         goto cleanup;
     }
-    call_end = reader_find_matching_pair(call_start, end, '(', ')');
+    call_end = parser_find_matching_pair(call_start, end, '(', ')');
     if (!call_end) {
         goto cleanup;
     }
@@ -498,7 +442,7 @@ char *reader_resolve_nuxt_alias_literal(const char *html, const char *alias) {
         for (int i = 0; i <= target_index; i++) {
             char *literal = NULL;
 
-            cursor = reader_skip_ws(cursor, call_end);
+            cursor = parser_skip_ws(cursor, call_end);
             if (cursor >= call_end || parse_js_literal_for_alias(&cursor, call_end, &literal) != 0) {
                 free(literal);
                 goto cleanup;
@@ -508,7 +452,7 @@ char *reader_resolve_nuxt_alias_literal(const char *html, const char *alias) {
                 break;
             }
             free(literal);
-            cursor = reader_skip_ws(cursor, call_end);
+            cursor = parser_skip_ws(cursor, call_end);
             if (cursor < call_end && *cursor == ',') {
                 cursor++;
             }
@@ -534,16 +478,16 @@ char *reader_extract_container_from_slice(const char *block_start, const char *b
     if (!field || field >= block_end) {
         return NULL;
     }
-    cursor = reader_skip_ws(value_start, block_end);
+    cursor = parser_skip_ws(value_start, block_end);
     if (cursor >= block_end) {
         return NULL;
     }
     if (*cursor == open_ch) {
-        close = reader_find_matching_pair(cursor, block_end, open_ch, close_ch);
+        close = parser_find_matching_pair(cursor, block_end, open_ch, close_ch);
         if (!close) {
             return NULL;
         }
-        return reader_dup_range(cursor, close + 1);
+        return parser_dup_range(cursor, close + 1);
     }
     if (parse_js_literal_for_alias(&cursor, block_end, &alias) != 0 || !alias) {
         free(alias);

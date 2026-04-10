@@ -3,9 +3,10 @@
 #include <string.h>
 #include <time.h>
 #include "api.h"
-#include "auth.h"
 #include "reader.h"
-#include "shelf.h"
+#include "reader_service.h"
+#include "session_service.h"
+#include "shelf_service.h"
 #include "ui.h"
 
 typedef struct {
@@ -30,11 +31,10 @@ static void usage(const char *argv0) {
 }
 
 static int require_valid_session(ApiContext *ctx) {
-    int session_ok = auth_check_session(ctx, NULL);
-    if (session_ok != 1) {
-        fprintf(stderr, "%s\n",
-                session_ok == 0 ?
-                "Session expired or not logged in. Run `weread login` first." :
+    const char *error_message = NULL;
+
+    if (session_service_require_valid_session(ctx, &error_message) != 1) {
+        fprintf(stderr, "%s\n", error_message ? error_message :
                 "Unable to verify login status. Check your network and try again.");
         return -1;
     }
@@ -91,6 +91,16 @@ int main(int argc, char **argv) {
         snprintf(ctx.ca_file, sizeof(ctx.ca_file), "%s", options.ca_file);
     }
 
+    /*
+     * Phase 4 maintainer note: main.c owns CLI parsing and command routing only.
+     * Session validation stays in session_service, shelf printing/resume preparation
+     * stays in shelf_service, and reader open/resume/progress orchestration stays
+     * in reader_service.
+     */
+    /*
+     * Protected Phase 1 CLI contract: keep these command spellings stable
+     * unless a later phase adds explicit compatibility or migration handling.
+     */
     if (strcmp(command, "login") == 0) {
         AuthSession session;
         char qr_path[1024];
@@ -99,8 +109,8 @@ int main(int argc, char **argv) {
         } else {
             snprintf(qr_path, sizeof(qr_path), "%s/weread-login-qr.png", options.data_dir);
         }
-        if (auth_start(&ctx, &session, qr_path) == 0 &&
-            auth_poll_until_done(&ctx, &session, 120) == 0) {
+        if (session_service_login_start(&ctx, &session, qr_path) == 0 &&
+            session_service_login_wait(&ctx, &session, 120) == 0) {
             rc = 0;
         }
     } else if (strcmp(command, "shelf") == 0) {
@@ -108,9 +118,9 @@ int main(int argc, char **argv) {
             api_cleanup(&ctx);
             return 1;
         }
-        rc = shelf_print(&ctx) == 0 ? 0 : 1;
+        rc = shelf_service_print(&ctx) == 0 ? 0 : 1;
     } else if (strcmp(command, "shelf-cache") == 0) {
-        rc = shelf_print_cached(&ctx) == 0 ? 0 : 1;
+        rc = shelf_service_print_cached(&ctx) == 0 ? 0 : 1;
     } else if (strcmp(command, "reader") == 0) {
         int font_size = argi + 1 < argc ? atoi(argv[argi + 1]) : 3;
         if (argi >= argc) {
@@ -119,18 +129,18 @@ int main(int argc, char **argv) {
             api_cleanup(&ctx);
             return 1;
         } else {
-            rc = reader_print(&ctx, argv[argi], font_size) == 0 ? 0 : 1;
+            rc = reader_service_print(&ctx, argv[argi], font_size) == 0 ? 0 : 1;
         }
     } else if (strcmp(command, "resume") == 0) {
         if (require_valid_session(&ctx) != 0) {
             api_cleanup(&ctx);
             return 1;
         }
-        rc = reader_resume(&ctx) == 0 ? 0 : 1;
+        rc = reader_service_resume(&ctx) == 0 ? 0 : 1;
     } else if (strcmp(command, "ui") == 0) {
         if (!ui_is_available() && used_default_command) {
             fprintf(stderr, "UI support unavailable in this build, falling back to shelf.\n");
-            rc = shelf_print(&ctx) == 0 ? 0 : 1;
+            rc = shelf_service_print(&ctx) == 0 ? 0 : 1;
         } else {
             rc = ui_run(&ctx, options.font_path, options.platform) == 0 ? 0 : 1;
         }

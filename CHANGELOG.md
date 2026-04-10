@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.6
+
+`0.1.6` hardens the build, packaging, and release path so maintainers can ship TrimUI packages with higher confidence and clearer diagnostics.
+
+### Highlights
+
+- Added `make doctor-release` so missing compiler, SDK, libcurl, `zip`, and `libgcc_s.so.1` failures surface before packaging starts
+- Added sha256 verification for tg5040 SDK and toolchain bootstrap downloads plus clearer missing-command diagnostics
+- Added package archive audits for NextUI, Stock, and CrossMix that verify launcher contracts, packaged runtime assets, bundled libraries, and tg5040 ELF dependencies
+- Added deterministic smoke coverage for the package audit helper itself with `make test-package-audit-smoke`
+- Updated GitHub release automation to run the same `make doctor-release -> make test-host -> make test-smoke -> make package-all -> make package-audit-all` path used locally
+
+### Notes
+
+This release is about release reliability rather than user-facing UI changes. The app behavior stays the same, but the shipping path is now much easier to trust: prerequisites fail fast, package contents are audited statically before publication, and CI no longer uses a weaker parallel release sequence than maintainers do locally.
+
 ## 0.1.5
 
 `0.1.5` focuses on reducing CPU usage and device temperature during long reading sessions.

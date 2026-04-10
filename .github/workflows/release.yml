@@ -27,6 +27,7 @@ jobs:
           sudo apt-get install -y \
             xz-utils \
             zip \
+            unzip \
             libsdl2-dev \
             libsdl2-ttf-dev \
             libsdl2-image-dev \
@@ -40,8 +41,20 @@ jobs:
       - name: Bootstrap TG5040 SDK
         run: make tg5040-bootstrap
 
+      - name: Run release preflight
+        run: make doctor-release
+
+      - name: Run host verification
+        run: make test-host
+
+      - name: Run host smoke
+        run: make test-smoke
+
       - name: Build TrimUI packages
-        run: make nextui-release stock-release crossmix-release
+        run: make package-all
+
+      - name: Audit TrimUI packages
+        run: make package-audit-all
 
       - name: Upload TrimUI artifacts
         uses: actions/upload-artifact@v6

@@ -1,0 +1,1 @@
+{"data":{"books":[{"bookId":"book-1","title":"Fixture Book","cover":"https://example.test/book-1.jpg"},{"bookId":"book-2","title":"Second Fixture","cover":"https://example.test/book-2.jpg"}],"synckey":12345},"meta":{"source":"host-fixture"}}

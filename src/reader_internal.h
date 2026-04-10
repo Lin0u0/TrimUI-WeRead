@@ -1,22 +1,26 @@
 /*
  * reader_internal.h - Internal shared declarations for reader modules
+ *
+ * Keeps reader-domain parser entrypoints and reader module collaboration
+ * surfaces. Generic parser primitives live in parser_internal.h.
  */
 #ifndef READER_INTERNAL_H
 #define READER_INTERNAL_H
 
 #include "reader.h"
 #include "api.h"
+#include "parser_internal.h"
 
-/* ====================== JS/HTML Parser Functions ====================== */
+/*
+ * Reader modules still expose these helper names to reader-side collaborators
+ * such as catalog parsing, but the generic implementations now live in the
+ * shared parser subsystem.
+ */
+#define reader_skip_ws parser_skip_ws
+#define reader_find_matching_pair parser_find_matching_pair
+#define reader_dup_range parser_dup_range
 
-/* Skip whitespace characters */
-const char *reader_skip_ws(const char *p, const char *end);
-
-/* Find matching closing bracket/brace */
-const char *reader_find_matching_pair(const char *start, const char *end, char open_ch, char close_ch);
-
-/* Duplicate a range of characters */
-char *reader_dup_range(const char *start, const char *end);
+/* ====================== Reader Parser Functions ====================== */
 
 /* Resolve a NUXT alias to a string value */
 char *reader_resolve_nuxt_alias_string(const char *html, const char *alias);

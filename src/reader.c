@@ -8,7 +8,7 @@
 #include "reader_internal.h"
 #include "html_strip.h"
 #include "json.h"
-#include "state.h"
+#include "reader_state.h"
 
 #define WEREAD_RANDOM_FONT_URL "https://cdn.weread.qq.com/app/assets/test-font/fzys_reversed.ttf"
 
@@ -1888,7 +1888,7 @@ static int reader_load_internal(ApiContext *ctx, const char *target, int font_si
 
     rc = 0;
     if (save_last_reader) {
-        state_save_last_reader(ctx, doc->target, font_size, 36);
+        reader_state_save_last_reader(ctx, doc->target, font_size, 36);
     }
 
 cleanup:
@@ -2192,33 +2192,4 @@ int reader_report_progress(ApiContext *ctx, const ReaderDocument *doc, int curre
     return reader_report_progress_at_offset(ctx, doc, current_page, total_pages,
                                             reading_seconds, page_summary,
                                             compute_progress, -1);
-}
-
-int reader_print(ApiContext *ctx, const char *target, int font_size) {
-    ReaderDocument doc;
-
-    if (reader_load(ctx, target, font_size, &doc) != 0) {
-        return -1;
-    }
-
-    if (doc.book_title) {
-        printf("%s\n", doc.book_title);
-    }
-    if (doc.chapter_title) {
-        printf("%s\n\n", doc.chapter_title);
-    }
-    printf("%s", doc.content_text);
-    reader_document_free(&doc);
-    return 0;
-}
-
-int reader_resume(ApiContext *ctx) {
-    char target[2048];
-    int font_size = 3;
-
-    if (state_load_last_reader(ctx, target, sizeof(target), &font_size, NULL) != 0) {
-        fprintf(stderr, "No saved reader state found in %s\n", ctx->state_dir);
-        return -1;
-    }
-    return reader_print(ctx, target, font_size);
 }
