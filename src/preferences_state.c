@@ -23,6 +23,25 @@ static int preferences_state_save_int(ApiContext *ctx, const char *key, int valu
     return rc;
 }
 
+static int preferences_state_load_int(ApiContext *ctx, const char *key, int default_value, int *value_out) {
+    cJSON *json = state_read_json(ctx, STATE_FILE_PREFERENCES);
+
+    if (!value_out) {
+        return -1;
+    }
+    if (!json) {
+        return -1;
+    }
+    if (!cJSON_HasObjectItem(json, key)) {
+        cJSON_Delete(json);
+        return -1;
+    }
+
+    *value_out = json_get_int(json, key, default_value);
+    cJSON_Delete(json);
+    return 0;
+}
+
 int preferences_state_save_dark_mode(ApiContext *ctx, int dark_mode) {
     return preferences_state_save_int(ctx, "darkMode", dark_mode ? 1 : 0);
 }
@@ -44,21 +63,21 @@ int preferences_state_save_brightness_level(ApiContext *ctx, int brightness_leve
 }
 
 int preferences_state_load_brightness_level(ApiContext *ctx, int *brightness_level) {
-    cJSON *json = state_read_json(ctx, STATE_FILE_PREFERENCES);
+    return preferences_state_load_int(ctx, "brightnessLevel", 7, brightness_level);
+}
 
-    if (!brightness_level) {
-        return -1;
-    }
-    if (!json) {
-        return -1;
-    }
+int preferences_state_save_reader_font_size(ApiContext *ctx, int reader_font_size) {
+    return preferences_state_save_int(ctx, "readerFontSize", reader_font_size);
+}
 
-    if (!cJSON_HasObjectItem(json, "brightnessLevel")) {
-        cJSON_Delete(json);
-        return -1;
-    }
+int preferences_state_load_reader_font_size(ApiContext *ctx, int *reader_font_size) {
+    return preferences_state_load_int(ctx, "readerFontSize", 36, reader_font_size);
+}
 
-    *brightness_level = json_get_int(json, "brightnessLevel", 7);
-    cJSON_Delete(json);
-    return 0;
+int preferences_state_save_rotation(ApiContext *ctx, int rotation) {
+    return preferences_state_save_int(ctx, "rotation", rotation);
+}
+
+int preferences_state_load_rotation(ApiContext *ctx, int *rotation) {
+    return preferences_state_load_int(ctx, "rotation", 0, rotation);
 }

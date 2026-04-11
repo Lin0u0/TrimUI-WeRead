@@ -1,14 +1,19 @@
 #include "test_support.h"
 
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "json.h"
+#include "preferences_state.h"
 #include "reader_service.h"
 #include "reader_state.h"
 #include "session_service.h"
 #include "shelf_service.h"
+#include "state.h"
 
 typedef struct {
     cJSON *case_json;
@@ -18,6 +23,7 @@ typedef struct {
 
 static ReaderServiceFixtureContext g_reader_fixture = {0};
 static int g_session_validate_result = 1;
+static int g_session_remote_logout_result = 0;
 
 static char *dup_or_null(const char *value) {
     if (!value) {
@@ -135,6 +141,11 @@ static int session_service_test_validate(ApiContext *ctx, cJSON **shelf_nuxt_out
     (void)ctx;
     (void)shelf_nuxt_out;
     return g_session_validate_result;
+}
+
+static int session_service_test_remote_logout(ApiContext *ctx) {
+    (void)ctx;
+    return g_session_remote_logout_result;
 }
 
 static void seed_local_position(ApiContext *ctx, cJSON *position_json) {
@@ -264,6 +275,182 @@ static void assert_session_cases(cJSON *fixture) {
     session_service_set_validate_session_override(NULL);
 }
 
+static void seed_session_artifacts(ApiContext *ctx) {
+    FILE *cookie_fp;
+    char persisted_path[PATH_MAX];
+
+    HOST_TEST_ASSERT_INT_EQ(host_test_seed_state_file(ctx, STATE_FILE_SHELF, "{\"books\":[]}"), 0);
+    HOST_TEST_ASSERT_INT_EQ(
+        host_test_seed_state_file(ctx, STATE_FILE_LAST_READER, "{\"target\":\"reader-token\"}"),
+        0
+    );
+    HOST_TEST_ASSERT_INT_EQ(
+        host_test_seed_state_file(ctx, STATE_FILE_READER_POSITIONS, "{\"book\":[1]}"),
+        0
+    );
+    HOST_TEST_ASSERT_INT_EQ(
+        host_test_seed_state_file(
+            ctx,
+            STATE_FILE_PREFERENCES,
+            "{\"darkMode\":1,\"brightnessLevel\":8,\"readerFontSize\":40,\"rotation\":2}"
+        ),
+        0
+    );
+
+    cookie_fp = fopen(ctx->cookie_file, "wb");
+    HOST_TEST_ASSERT(cookie_fp != NULL);
+    HOST_TEST_ASSERT(fputs("# Netscape HTTP Cookie File\n", cookie_fp) >= 0);
+    HOST_TEST_ASSERT_INT_EQ(fclose(cookie_fp), 0);
+
+    HOST_TEST_ASSERT(
+        snprintf(persisted_path, sizeof(persisted_path), "%s/%s", ctx->state_dir, STATE_FILE_SHELF) <
+        (int)sizeof(persisted_path)
+    );
+    HOST_TEST_ASSERT(access(persisted_path, F_OK) == 0);
+}
+
+static void assert_logout_result_cases(ApiContext *ctx) {
+    SessionLogoutResult result = {0};
+    char path[PATH_MAX];
+    char *preferences_text;
+
+    seed_session_artifacts(ctx);
+    g_session_remote_logout_result = -1;
+    session_service_set_remote_logout_override(session_service_test_remote_logout);
+    HOST_TEST_ASSERT_INT_EQ(session_service_logout(ctx, &result), 0);
+    HOST_TEST_ASSERT_INT_EQ(result.outcome, SESSION_LOGOUT_REMOTE_FAILED);
+    HOST_TEST_ASSERT_INT_EQ(result.local_cleanup_ok, 1);
+    HOST_TEST_ASSERT_INT_EQ(result.remote_attempted, 1);
+    HOST_TEST_ASSERT_INT_EQ(result.remote_logout_ok, 0);
+
+    HOST_TEST_ASSERT(access(ctx->cookie_file, F_OK) != 0);
+    HOST_TEST_ASSERT(
+        snprintf(path, sizeof(path), "%s/%s", ctx->state_dir, STATE_FILE_SHELF) < (int)sizeof(path)
+    );
+    HOST_TEST_ASSERT(access(path, F_OK) != 0);
+    HOST_TEST_ASSERT(
+        snprintf(path, sizeof(path), "%s/%s", ctx->state_dir, STATE_FILE_LAST_READER) <
+        (int)sizeof(path)
+    );
+    HOST_TEST_ASSERT(access(path, F_OK) != 0);
+    HOST_TEST_ASSERT(
+        snprintf(path, sizeof(path), "%s/%s", ctx->state_dir, STATE_FILE_READER_POSITIONS) <
+        (int)sizeof(path)
+    );
+    HOST_TEST_ASSERT(access(path, F_OK) != 0);
+    HOST_TEST_ASSERT(
+        snprintf(path, sizeof(path), "%s/%s", ctx->state_dir, STATE_FILE_PREFERENCES) <
+        (int)sizeof(path)
+    );
+    preferences_text = host_test_read_file(path);
+    HOST_TEST_ASSERT(preferences_text != NULL);
+    HOST_TEST_ASSERT(strstr(preferences_text, "\"darkMode\":1") != NULL);
+    HOST_TEST_ASSERT(strstr(preferences_text, "\"readerFontSize\":40") != NULL);
+    free(preferences_text);
+    session_service_set_remote_logout_override(NULL);
+}
+
+static void assert_logout_success_case(ApiContext *ctx) {
+    SessionLogoutResult result = {0};
+    char path[PATH_MAX];
+
+    seed_session_artifacts(ctx);
+    g_session_remote_logout_result = 0;
+    session_service_set_remote_logout_override(session_service_test_remote_logout);
+    HOST_TEST_ASSERT_INT_EQ(session_service_logout(ctx, &result), 0);
+    HOST_TEST_ASSERT_INT_EQ(result.outcome, SESSION_LOGOUT_SUCCESS);
+    HOST_TEST_ASSERT_INT_EQ(result.local_cleanup_ok, 1);
+    HOST_TEST_ASSERT_INT_EQ(result.remote_attempted, 1);
+    HOST_TEST_ASSERT_INT_EQ(result.remote_logout_ok, 1);
+
+    HOST_TEST_ASSERT(access(ctx->cookie_file, F_OK) != 0);
+    HOST_TEST_ASSERT(
+        snprintf(path, sizeof(path), "%s/%s", ctx->state_dir, STATE_FILE_SHELF) < (int)sizeof(path)
+    );
+    HOST_TEST_ASSERT(access(path, F_OK) != 0);
+    HOST_TEST_ASSERT(
+        snprintf(path, sizeof(path), "%s/%s", ctx->state_dir, STATE_FILE_LAST_READER) <
+        (int)sizeof(path)
+    );
+    HOST_TEST_ASSERT(access(path, F_OK) != 0);
+    HOST_TEST_ASSERT(
+        snprintf(path, sizeof(path), "%s/%s", ctx->state_dir, STATE_FILE_READER_POSITIONS) <
+        (int)sizeof(path)
+    );
+    HOST_TEST_ASSERT(access(path, F_OK) != 0);
+    session_service_set_remote_logout_override(NULL);
+}
+
+static void assert_logout_local_failure_case(ApiContext *ctx) {
+    SessionLogoutResult result = {0};
+
+    session_service_set_remote_logout_override(session_service_test_remote_logout);
+    HOST_TEST_ASSERT_INT_EQ(session_service_logout(NULL, &result), -1);
+    HOST_TEST_ASSERT_INT_EQ(result.outcome, SESSION_LOGOUT_LOCAL_FAILED);
+    HOST_TEST_ASSERT_INT_EQ(result.local_cleanup_ok, 0);
+    HOST_TEST_ASSERT_INT_EQ(result.remote_attempted, 0);
+    HOST_TEST_ASSERT_INT_EQ(result.remote_logout_ok, 0);
+    session_service_set_remote_logout_override(NULL);
+
+    HOST_TEST_ASSERT(ctx != NULL);
+}
+
+static void assert_logout_local_failure_preserves_artifacts(ApiContext *ctx) {
+    SessionLogoutResult result = {0};
+    char shelf_path[PATH_MAX];
+    char last_reader_path[PATH_MAX];
+    char positions_path[PATH_MAX];
+
+    seed_session_artifacts(ctx);
+    HOST_TEST_ASSERT(
+        snprintf(shelf_path, sizeof(shelf_path), "%s/%s", ctx->state_dir, STATE_FILE_SHELF) <
+        (int)sizeof(shelf_path)
+    );
+    HOST_TEST_ASSERT_INT_EQ(unlink(shelf_path), 0);
+    HOST_TEST_ASSERT_INT_EQ(mkdir(shelf_path, 0700), 0);
+    HOST_TEST_ASSERT(
+        snprintf(last_reader_path, sizeof(last_reader_path), "%s/%s",
+                 ctx->state_dir, STATE_FILE_LAST_READER) < (int)sizeof(last_reader_path)
+    );
+    HOST_TEST_ASSERT(
+        snprintf(positions_path, sizeof(positions_path), "%s/%s",
+                 ctx->state_dir, STATE_FILE_READER_POSITIONS) < (int)sizeof(positions_path)
+    );
+
+    session_service_set_remote_logout_override(session_service_test_remote_logout);
+    HOST_TEST_ASSERT_INT_EQ(session_service_logout(ctx, &result), -1);
+    HOST_TEST_ASSERT_INT_EQ(result.outcome, SESSION_LOGOUT_LOCAL_FAILED);
+    HOST_TEST_ASSERT_INT_EQ(result.local_cleanup_ok, 0);
+    HOST_TEST_ASSERT_INT_EQ(result.remote_attempted, 0);
+    HOST_TEST_ASSERT_INT_EQ(result.remote_logout_ok, 0);
+    HOST_TEST_ASSERT(access(ctx->cookie_file, F_OK) == 0);
+    HOST_TEST_ASSERT(access(shelf_path, F_OK) == 0);
+    HOST_TEST_ASSERT(access(last_reader_path, F_OK) == 0);
+    HOST_TEST_ASSERT(access(positions_path, F_OK) == 0);
+    session_service_set_remote_logout_override(NULL);
+
+    HOST_TEST_ASSERT_INT_EQ(rmdir(shelf_path), 0);
+    HOST_TEST_ASSERT_INT_EQ(host_test_seed_state_file(ctx, STATE_FILE_SHELF, "{\"books\":[]}"), 0);
+}
+
+static void assert_logout_requires_login_on_startup(ApiContext *ctx) {
+    SessionLogoutResult result = {0};
+    int poor_network = 1;
+    int startup_result;
+
+    seed_session_artifacts(ctx);
+    g_session_remote_logout_result = 0;
+    session_service_set_remote_logout_override(session_service_test_remote_logout);
+    HOST_TEST_ASSERT_INT_EQ(session_service_logout(ctx, &result), 0);
+    session_service_set_remote_logout_override(NULL);
+
+    HOST_TEST_ASSERT_INT_EQ(setenv("WEREAD_TEST_SESSION_STATUS", "0", 1), 0);
+    startup_result = session_service_startup_refresh(ctx, NULL, &poor_network);
+    HOST_TEST_ASSERT_INT_EQ(startup_result, 0);
+    HOST_TEST_ASSERT_INT_EQ(poor_network, 0);
+    HOST_TEST_ASSERT_INT_EQ(unsetenv("WEREAD_TEST_SESSION_STATUS"), 0);
+}
+
 static void assert_reader_open_cases(ApiContext *ctx, cJSON *fixture) {
     cJSON *cases = cJSON_GetObjectItemCaseSensitive(fixture, "openCases");
     ReaderServiceOps ops = {
@@ -273,6 +460,7 @@ static void assert_reader_open_cases(ApiContext *ctx, cJSON *fixture) {
     int i;
 
     HOST_TEST_ASSERT(cJSON_IsArray(cases));
+    HOST_TEST_ASSERT_INT_EQ(preferences_state_save_reader_font_size(ctx, 36), 0);
     reader_service_set_test_ops(&ops);
     for (i = 0; i < cJSON_GetArraySize(cases); i++) {
         cJSON *case_json = cJSON_GetArrayItem(cases, i);
@@ -306,6 +494,34 @@ static void assert_reader_open_cases(ApiContext *ctx, cJSON *fixture) {
     reader_service_set_test_ops(NULL);
 }
 
+static void assert_reader_preference_fallback(ApiContext *ctx) {
+    ReaderServiceOps ops = {
+        .load = reader_service_test_load,
+        .find_chapter_target = reader_service_test_find_target,
+    };
+    cJSON *documents = cJSON_Parse(
+        "[{\"target\":\"chapter-pref\",\"bookId\":\"pref-book\",\"chapterUid\":\"c1\","
+        "\"chapterIdx\":1,\"fontSize\":3,\"savedChapterOffset\":0,\"catalog\":[]}]"
+    );
+    ReaderOpenResult result;
+
+    HOST_TEST_ASSERT(documents != NULL);
+    HOST_TEST_ASSERT_INT_EQ(preferences_state_save_reader_font_size(ctx, 44), 0);
+
+    g_reader_fixture.case_json = NULL;
+    g_reader_fixture.documents = documents;
+    g_reader_fixture.find_targets = NULL;
+    reader_service_set_test_ops(&ops);
+    HOST_TEST_ASSERT_INT_EQ(
+        reader_service_prepare_open_document(ctx, "chapter-pref", "pref-book", 3, &result),
+        0
+    );
+    HOST_TEST_ASSERT_INT_EQ(result.content_font_size, 44);
+    reader_document_free(&result.doc);
+    reader_service_set_test_ops(NULL);
+    cJSON_Delete(documents);
+}
+
 int main(void) {
     ApiContext ctx;
     char temp_dir[PATH_MAX];
@@ -317,7 +533,13 @@ int main(void) {
     assert_resume_cases(&ctx, shelf_fixture);
     assert_selected_open_cases(shelf_fixture);
     assert_session_cases(reader_fixture);
+    assert_logout_success_case(&ctx);
+    assert_logout_result_cases(&ctx);
+    assert_logout_local_failure_case(&ctx);
+    assert_logout_local_failure_preserves_artifacts(&ctx);
+    assert_logout_requires_login_on_startup(&ctx);
     assert_reader_open_cases(&ctx, reader_fixture);
+    assert_reader_preference_fallback(&ctx);
 
     cJSON_Delete(reader_fixture);
     cJSON_Delete(shelf_fixture);

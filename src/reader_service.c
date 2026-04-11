@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "preferences_state.h"
 #include "reader_state.h"
 #include "reader_service.h"
 
@@ -117,6 +118,9 @@ int reader_service_prepare_open_document(ApiContext *ctx, const char *source_tar
                                    NULL, &saved_content_font_size,
                                    &saved_page, &saved_offset) == 0) {
         has_local_position = 1;
+    }
+    if (!has_local_position) {
+        (void)preferences_state_load_reader_font_size(ctx, &saved_content_font_size);
     }
 
     if (reader_service_load_document(ctx, source_target, font_size, &doc) != 0) {

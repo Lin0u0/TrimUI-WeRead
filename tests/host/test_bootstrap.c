@@ -34,7 +34,11 @@ int main(void) {
     free(fixture_text);
 
     HOST_TEST_ASSERT_INT_EQ(
-        host_test_seed_state_file(&ctx, STATE_FILE_PREFERENCES, "{\n  \"darkMode\": 1\n}\n"),
+        host_test_seed_state_file(
+            &ctx,
+            STATE_FILE_PREFERENCES,
+            "{\n  \"darkMode\": 1,\n  \"readerFontSize\": 40,\n  \"rotation\": 2\n}\n"
+        ),
         0
     );
     HOST_TEST_ASSERT(
@@ -44,6 +48,8 @@ int main(void) {
     seeded_json = host_test_read_file(seeded_path);
     HOST_TEST_ASSERT(seeded_json != NULL);
     HOST_TEST_ASSERT(strstr(seeded_json, "\"darkMode\": 1") != NULL);
+    HOST_TEST_ASSERT(strstr(seeded_json, "\"readerFontSize\": 40") != NULL);
+    HOST_TEST_ASSERT(strstr(seeded_json, "\"rotation\": 2") != NULL);
     free(seeded_json);
 
     host_test_cleanup_api_context(&ctx, temp_dir);

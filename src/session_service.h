@@ -4,14 +4,30 @@
 #include "auth.h"
 
 typedef int (*SessionServiceValidateSessionFn)(ApiContext *ctx, cJSON **shelf_nuxt_out);
+typedef int (*SessionServiceRemoteLogoutFn)(ApiContext *ctx);
+
+typedef enum {
+    SESSION_LOGOUT_SUCCESS = 0,
+    SESSION_LOGOUT_REMOTE_FAILED = 1,
+    SESSION_LOGOUT_LOCAL_FAILED = 2
+} SessionLogoutOutcome;
+
+typedef struct {
+    SessionLogoutOutcome outcome;
+    int local_cleanup_ok;
+    int remote_attempted;
+    int remote_logout_ok;
+} SessionLogoutResult;
 
 int session_service_validate_session(ApiContext *ctx, cJSON **shelf_nuxt_out);
 void session_service_set_validate_session_override(SessionServiceValidateSessionFn fn);
+void session_service_set_remote_logout_override(SessionServiceRemoteLogoutFn fn);
 int session_service_require_valid_session(ApiContext *ctx, const char **error_message);
 int session_service_startup_refresh(ApiContext *ctx, cJSON **shelf_nuxt_out, int *poor_network);
 int session_service_login_start(ApiContext *ctx, AuthSession *session, const char *qr_png_path);
 int session_service_login_poll_once(ApiContext *ctx, AuthSession *session, AuthPollStatus *status);
 int session_service_login_wait(ApiContext *ctx, AuthSession *session, int timeout_seconds);
+int session_service_logout(ApiContext *ctx, SessionLogoutResult *result);
 
 int session_service_startup_refresh_background(const char *data_dir, const char *ca_file,
                                                cJSON **shelf_nuxt_out, int *poor_network);

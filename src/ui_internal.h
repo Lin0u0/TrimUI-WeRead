@@ -24,8 +24,29 @@ typedef enum {
     VIEW_LOGIN = 1,
     VIEW_READER = 2,
     VIEW_BOOTSTRAP = 3,
-    VIEW_OPENING = 4
+    VIEW_OPENING = 4,
+    VIEW_SETTINGS = 5
 } UiView;
+
+typedef enum {
+    UI_SETTINGS_ORIGIN_NONE = 0,
+    UI_SETTINGS_ORIGIN_SHELF,
+    UI_SETTINGS_ORIGIN_READER
+} UiSettingsOrigin;
+
+typedef enum {
+    UI_SETTINGS_ITEM_READER_FONT_SIZE = 0,
+    UI_SETTINGS_ITEM_DARK_MODE,
+    UI_SETTINGS_ITEM_BRIGHTNESS,
+    UI_SETTINGS_ITEM_ROTATION,
+    UI_SETTINGS_ITEM_LOGOUT,
+    UI_SETTINGS_ITEM_COUNT
+} UiSettingsItem;
+
+typedef struct {
+    UiSettingsItem item;
+    const char *title;
+} UiSettingsItemSpec;
 
 typedef enum {
     UI_ROTATE_LANDSCAPE = 0,
@@ -219,6 +240,16 @@ typedef struct {
     int last_update_index;
 } ChapterPrefetchCache;
 
+typedef struct {
+    int open;
+    int quick_open;
+    int selected;
+    int logout_confirm_armed;
+    int shelf_selected;
+    UiSettingsOrigin origin;
+    UiView return_view;
+} SettingsFlowState;
+
 /* ====================== Constants ====================== */
 
 enum {
@@ -325,6 +356,7 @@ int ui_event_is_chapter_prev(const SDL_Event *event, int tg5040_input);
 int ui_event_is_chapter_next(const SDL_Event *event, int tg5040_input);
 int ui_event_is_page_prev(const SDL_Event *event, int tg5040_input);
 int ui_event_is_page_next(const SDL_Event *event, int tg5040_input);
+int ui_event_is_settings_open(const SDL_Event *event, int tg5040_input);
 int ui_any_joystick_button_pressed(SDL_Joystick **joysticks, int joystick_count, Uint8 button);
 int ui_any_joystick_hat_pressed(SDL_Joystick **joysticks, int joystick_count, Uint8 mask);
 int ui_any_joystick_axis_pressed(SDL_Joystick **joysticks, int joystick_count, Uint8 axis, int negative);
@@ -466,6 +498,18 @@ void ui_reader_flow_shutdown(ReaderOpenState *reader_open,
                              ProgressReportState *progress_report,
                              SDL_Thread **progress_report_thread_handle,
                              ChapterPrefetchCache *chapter_prefetch_cache);
+
+/* ====================== ui_flow_settings.c ====================== */
+
+void ui_settings_flow_state_reset(SettingsFlowState *state);
+int ui_settings_flow_open(SettingsFlowState *state, UiView *view,
+                          UiSettingsOrigin origin, int quick_open, int shelf_selected);
+int ui_settings_flow_open_from_shelf(SettingsFlowState *state, UiView *view,
+                                     int quick_open, int shelf_selected);
+int ui_settings_flow_open_from_reader(SettingsFlowState *state, UiView *view,
+                                      int quick_open);
+int ui_settings_flow_close(SettingsFlowState *state, UiView *view, int *shelf_selected);
+const UiSettingsItemSpec *ui_settings_flow_items(int *count_out);
 
 /* ====================== Utility functions ====================== */
 

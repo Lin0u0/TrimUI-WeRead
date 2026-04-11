@@ -38,6 +38,8 @@ cache_missing_output="$tmpdir/shelf-cache-missing.txt"
 cache_success_output="$tmpdir/shelf-cache-success.txt"
 resume_missing_output="$tmpdir/resume-missing.txt"
 resume_success_output="$tmpdir/resume-success.txt"
+resume_logged_out_output="$tmpdir/resume-logged-out.txt"
+shelf_logged_out_output="$tmpdir/shelf-logged-out.txt"
 data_dir="$tmpdir/data"
 state_dir="$data_dir/state"
 
@@ -84,4 +86,18 @@ WEREAD_TEST_SESSION_STATUS=1 WEREAD_TEST_READER_OUTPUT="fixture resume output" \
     run_capture "$resume_success_output" "$bin_path" --data "$data_dir" resume
 assert_contains "fixture resume output" "$resume_success_output"
 
-printf '%s\n' "[test-smoke] help, shelf-cache, and resume smoke checks passed"
+if WEREAD_TEST_SESSION_STATUS=0 \
+    run_capture "$resume_logged_out_output" "$bin_path" --data "$data_dir" resume; then
+    printf '%s\n' "smoke assertion failed: resume should fail when the session is invalid" >&2
+    exit 1
+fi
+assert_contains "Session expired or not logged in. Run \`weread login\` first." "$resume_logged_out_output"
+
+if WEREAD_TEST_SESSION_STATUS=0 \
+    run_capture "$shelf_logged_out_output" "$bin_path" --data "$data_dir" shelf; then
+    printf '%s\n' "smoke assertion failed: shelf should fail when the session is invalid" >&2
+    exit 1
+fi
+assert_contains "Session expired or not logged in. Run \`weread login\` first." "$shelf_logged_out_output"
+
+printf '%s\n' "[test-smoke] help, shelf-cache, resume, and logged-out session checks passed"

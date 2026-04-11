@@ -80,11 +80,11 @@ These filenames are part of the current runtime contract and should stay stable 
 - `A`: confirm, open book, next page
 - `B`: back, close overlays, previous page in some contexts
 - `X`: resume the last opened book from the shelf
-- `Y`: cycle reader font size
+- `Y`: open settings from shelf or reader
 - `L1/R1`: page up and page down in catalog / reader
-- `L3`: toggle dark mode
-- `R3`: rotate the UI
 - `Power/Lock`: suspend the device from inside the app
+
+Reader font size, dark mode, brightness, and rotation now live inside the in-app settings page.
 
 `Menu`, `Select`, and `Start` are intentionally left to the system so firmware hotkeys keep working.
 

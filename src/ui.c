@@ -22,6 +22,7 @@
 #include "preferences_state.h"
 #include "reader.h"
 #include "reader_state.h"
+#include "session_service.h"
 #include "shelf.h"
 #include "shelf_state.h"
 #include "state.h"
@@ -2093,6 +2094,375 @@ static void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font
     }
 }
 
+static int ui_settings_visible_item_count(void) {
+    return UI_SETTINGS_ITEM_COUNT;
+}
+
+static void ui_settings_clear_logout_confirm(SettingsFlowState *settings_state) {
+    if (!settings_state) {
+        return;
+    }
+    settings_state->logout_confirm_armed = 0;
+}
+
+static const char *ui_logout_status_text(SessionLogoutOutcome outcome) {
+    switch (outcome) {
+    case SESSION_LOGOUT_SUCCESS:
+        return "Logged out locally and remotely";
+    case SESSION_LOGOUT_REMOTE_FAILED:
+        return "Logged out locally, but remote logout failed";
+    case SESSION_LOGOUT_LOCAL_FAILED:
+    default:
+        return "Local logout failed, still logged in locally";
+    }
+}
+
+static void ui_transition_to_login_required(UiView *view, AuthSession *session, int *login_active,
+                                            SettingsFlowState *settings_state,
+                                            ReaderViewState *reader_state, cJSON **shelf_nuxt,
+                                            ShelfCoverCache *shelf_covers,
+                                            ShelfCoverDownloadState *cover_download_state,
+                                            SDL_Thread **cover_download_thread_handle,
+                                            SDL_Texture **qr_texture, int *selected,
+                                            Uint32 *exit_confirm_until,
+                                            Uint32 *reader_exit_confirm_until,
+                                            char *status, size_t status_size,
+                                            const char *message) {
+    if (cover_download_state && cover_download_thread_handle) {
+        ui_shelf_flow_cover_download_stop(cover_download_state, cover_download_thread_handle);
+    }
+    if (shelf_covers) {
+        shelf_cover_cache_reset(shelf_covers);
+    }
+    if (shelf_nuxt && *shelf_nuxt) {
+        cJSON_Delete(*shelf_nuxt);
+        *shelf_nuxt = NULL;
+    }
+    if (reader_state) {
+        reader_view_free(reader_state);
+    }
+    if (settings_state) {
+        ui_settings_flow_state_reset(settings_state);
+    }
+    if (session) {
+        memset(session, 0, sizeof(*session));
+    }
+    if (login_active) {
+        *login_active = 0;
+    }
+    if (selected) {
+        *selected = 0;
+    }
+    if (exit_confirm_until) {
+        *exit_confirm_until = 0;
+    }
+    if (reader_exit_confirm_until) {
+        *reader_exit_confirm_until = 0;
+    }
+    if (qr_texture && *qr_texture) {
+        SDL_DestroyTexture(*qr_texture);
+        *qr_texture = NULL;
+    }
+    if (status && status_size > 0) {
+        snprintf(status, status_size, "%s",
+                 message ? message : "Press A to generate QR code");
+    }
+    if (view) {
+        *view = VIEW_LOGIN;
+    }
+}
+
+static int ui_rotation_prev(UiRotation rotation) {
+    switch (rotation) {
+    case UI_ROTATE_RIGHT_PORTRAIT:
+        return UI_ROTATE_LANDSCAPE;
+    case UI_ROTATE_LANDSCAPE:
+        return UI_ROTATE_LEFT_PORTRAIT;
+    case UI_ROTATE_LEFT_PORTRAIT:
+    default:
+        return UI_ROTATE_RIGHT_PORTRAIT;
+    }
+}
+
+static const char *ui_rotation_label(UiRotation rotation) {
+    switch (rotation) {
+    case UI_ROTATE_RIGHT_PORTRAIT:
+        return "Portrait Right";
+    case UI_ROTATE_LEFT_PORTRAIT:
+        return "Portrait Left";
+    case UI_ROTATE_LANDSCAPE:
+    default:
+        return "Landscape";
+    }
+}
+
+static int ui_reader_font_size_step(int current, int delta) {
+    static const int sizes[] = { 24, 28, 32, 36, 40, 44 };
+    int index = 3;
+    int i;
+
+    if (delta == 0) {
+        delta = 1;
+    }
+    for (i = 0; i < (int)(sizeof(sizes) / sizeof(sizes[0])); i++) {
+        if (sizes[i] == current) {
+            index = i;
+            break;
+        }
+    }
+    index += delta > 0 ? 1 : -1;
+    if (index < 0) {
+        index = (int)(sizeof(sizes) / sizeof(sizes[0])) - 1;
+    } else if (index >= (int)(sizeof(sizes) / sizeof(sizes[0]))) {
+        index = 0;
+    }
+    return sizes[index];
+}
+
+static int ui_settings_effective_font_size(const SettingsFlowState *settings_state,
+                                           const ReaderViewState *reader_state,
+                                           int preferred_reader_font_size) {
+    if (settings_state &&
+        settings_state->origin == UI_SETTINGS_ORIGIN_READER &&
+        reader_state &&
+        reader_state->content_font_size > 0) {
+        return reader_state->content_font_size;
+    }
+    if (preferred_reader_font_size > 0) {
+        return preferred_reader_font_size;
+    }
+    return UI_READER_CONTENT_FONT_SIZE;
+}
+
+static void ui_settings_value_text(char *out, size_t out_size, UiSettingsItem item,
+                                   const SettingsFlowState *settings_state,
+                                   const ReaderViewState *reader_state,
+                                   int preferred_reader_font_size, int brightness_level,
+                                   UiRotation rotation) {
+    if (!out || out_size == 0) {
+        return;
+    }
+
+    switch (item) {
+    case UI_SETTINGS_ITEM_READER_FONT_SIZE:
+        snprintf(out, out_size, "%d", ui_settings_effective_font_size(settings_state,
+                                                                      reader_state,
+                                                                      preferred_reader_font_size));
+        break;
+    case UI_SETTINGS_ITEM_DARK_MODE:
+        snprintf(out, out_size, "%s", ui_dark_mode ? "On" : "Off");
+        break;
+    case UI_SETTINGS_ITEM_BRIGHTNESS:
+        if (brightness_level < UI_BRIGHTNESS_MIN || brightness_level > UI_BRIGHTNESS_MAX) {
+            brightness_level = UI_BRIGHTNESS_DEFAULT;
+        }
+        snprintf(out, out_size, "%d/10", brightness_level);
+        break;
+    case UI_SETTINGS_ITEM_ROTATION:
+        snprintf(out, out_size, "%s", ui_rotation_label(rotation));
+        break;
+    case UI_SETTINGS_ITEM_LOGOUT:
+    default:
+        out[0] = '\0';
+        break;
+    }
+}
+
+static void render_settings(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
+                            const SettingsFlowState *settings_state,
+                            const ReaderViewState *reader_state,
+                            int preferred_reader_font_size, int brightness_level,
+                            UiRotation rotation, const char *status,
+                            const char *battery_text, const UiLayout *layout) {
+    const UiTheme *theme = ui_current_theme();
+    SDL_Color ink = theme->ink;
+    SDL_Color muted = theme->muted;
+    SDL_Color line = theme->line;
+    const UiSettingsItemSpec *items = NULL;
+    int item_count = ui_settings_visible_item_count();
+    int canvas_w = layout ? layout->canvas_w : UI_CANVAS_WIDTH;
+    int canvas_h = layout ? layout->canvas_h : UI_CANVAS_HEIGHT;
+    int cw = layout ? layout->content_w : canvas_w;
+    int cx = layout ? layout->content_x : 0;
+    SDL_Rect header_band = { 0, 0, canvas_w, 60 };
+    SDL_Rect header_line = { 0, 60, canvas_w, 1 };
+    SDL_Rect footer_line = { 0, canvas_h - 56, canvas_w, 1 };
+    SDL_Rect panel;
+    int title_y = (60 - (title_font ? TTF_FontHeight(title_font) : 36)) / 2;
+    int footer_text_y = footer_line.y + (56 - (body_font ? TTF_FontHeight(body_font) : 28)) / 2;
+    int subtitle_y = 76;
+    int subtitle_h = body_font ? TTF_FontHeight(body_font) : 28;
+    int status_h = body_font ? TTF_FontHeight(body_font) : 28;
+    int list_top;
+    int list_bottom;
+    int list_gap = 12;
+    int row_h;
+    char subtitle[64];
+    char subtitle_buf[64];
+    char status_buf[96];
+
+    SDL_SetRenderDrawColor(renderer, theme->bg_r, theme->bg_g, theme->bg_b, 255);
+    SDL_RenderClear(renderer);
+    SDL_SetRenderDrawColor(renderer, theme->header_r, theme->header_g, theme->header_b, 255);
+    SDL_RenderFillRect(renderer, &header_band);
+    SDL_SetRenderDrawColor(renderer, line.r, line.g, line.b, line.a);
+    SDL_RenderFillRect(renderer, &header_line);
+    SDL_RenderFillRect(renderer, &footer_line);
+
+    draw_text(renderer, title_font, cx + 32, title_y, ink, "Settings");
+    render_header_status(renderer, body_font, battery_text, layout);
+    snprintf(subtitle, sizeof(subtitle), "%s quick settings",
+             (settings_state && settings_state->origin == UI_SETTINGS_ORIGIN_READER) ?
+             "Reader" : "Shelf");
+    fit_text_ellipsis(body_font, subtitle, cw - 64, subtitle_buf, sizeof(subtitle_buf));
+    draw_text(renderer, body_font, cx + 32, subtitle_y, muted, subtitle_buf);
+
+    panel.w = cw - 48;
+    if (panel.w > 760) {
+        panel.w = 760;
+    }
+    panel.x = cx + (cw - panel.w) / 2;
+    panel.y = subtitle_y + subtitle_h + 18;
+    panel.h = footer_line.y - panel.y - 18;
+    if (panel.h < 280) {
+        panel.h = footer_line.y - panel.y - 8;
+    }
+    SDL_SetRenderDrawColor(renderer, theme->card_r, theme->card_g, theme->card_b, 255);
+    SDL_RenderFillRect(renderer, &panel);
+    draw_rect_outline(renderer, &panel, line, 1);
+
+    list_top = panel.y + 18;
+    list_bottom = panel.y + panel.h - 18 - status_h - 12;
+    row_h = (list_bottom - list_top - list_gap * (item_count - 1)) / item_count;
+    if (row_h > 72) {
+        row_h = 72;
+    }
+    if (row_h < 54) {
+        row_h = 54;
+    }
+
+    items = ui_settings_flow_items(NULL);
+    for (int i = 0; items && i < item_count; i++) {
+        SDL_Rect row = { panel.x + 16, list_top + i * (row_h + list_gap), panel.w - 32, row_h };
+        char value_buf[64];
+        char title_buf[64];
+        char value_fit_buf[64];
+        int value_w = 0;
+        int font_h = body_font ? TTF_FontHeight(body_font) : 28;
+        int text_y = row.y + (row.h - font_h) / 2;
+        int value_max_w = row.w / 3;
+        int title_max_w;
+
+        if (settings_state && settings_state->selected == i) {
+            SDL_SetRenderDrawColor(renderer, theme->catalog_current_r, theme->catalog_current_g,
+                                   theme->catalog_current_b, 255);
+            SDL_RenderFillRect(renderer, &row);
+        }
+        draw_rect_outline(renderer, &row, line, 1);
+        ui_settings_value_text(value_buf, sizeof(value_buf), items[i].item,
+                               settings_state, reader_state,
+                               preferred_reader_font_size, brightness_level, rotation);
+        if (value_buf[0]) {
+            fit_text_ellipsis(body_font, value_buf, value_max_w, value_fit_buf,
+                              sizeof(value_fit_buf));
+            TTF_SizeUTF8(body_font, value_fit_buf, &value_w, NULL);
+        } else {
+            value_fit_buf[0] = '\0';
+        }
+        title_max_w = row.w - 32 - (value_w > 0 ? value_w + 20 : 0);
+        fit_text_ellipsis(body_font, items[i].title, title_max_w, title_buf, sizeof(title_buf));
+        draw_text(renderer, body_font, row.x + 16, text_y, ink, title_buf);
+        if (value_buf[0]) {
+            draw_text(renderer, body_font, row.x + row.w - 16 - value_w, text_y,
+                      settings_state && settings_state->selected == i ? ink : muted,
+                      value_fit_buf);
+        }
+    }
+
+    fit_text_ellipsis(body_font,
+                      status && status[0] ? status : "Left/Right adjust, A next, B back",
+                      cw - 64, status_buf, sizeof(status_buf));
+    draw_text(renderer, body_font, cx + 32, footer_text_y, muted, status_buf);
+}
+
+static int ui_settings_apply(SettingsFlowState *settings_state, ApiContext *ctx,
+                             SDL_Renderer *renderer, TTF_Font *body_font,
+                             ReaderViewState *reader_state,
+                             int *preferred_reader_font_size,
+                             int tg5040_input, int *brightness_level, UiRotation *rotation,
+                             UiLayout *current_layout, SDL_Texture **scene_texture,
+                             char *status, size_t status_size, int direction) {
+    if (!settings_state || !ctx || !status || status_size == 0) {
+        return 0;
+    }
+
+    switch ((UiSettingsItem)settings_state->selected) {
+    case UI_SETTINGS_ITEM_READER_FONT_SIZE: {
+        int next_font_size = ui_reader_font_size_step(
+            ui_settings_effective_font_size(settings_state, reader_state,
+                                            preferred_reader_font_size ?
+                                            *preferred_reader_font_size :
+                                            UI_READER_CONTENT_FONT_SIZE),
+            direction);
+
+        if (preferred_reader_font_size) {
+            *preferred_reader_font_size = next_font_size;
+        }
+        preferences_state_save_reader_font_size(ctx, next_font_size);
+        if (settings_state->origin == UI_SETTINGS_ORIGIN_READER && reader_state) {
+            reader_state->content_font_size = next_font_size;
+            if (ui_reader_view_reset_content_font(body_font, reader_state) != 0) {
+                snprintf(status, status_size, "Unable to apply font size");
+                return 0;
+            }
+            ui_reader_view_rewrap(body_font, current_layout->reader_content_w,
+                                  current_layout->reader_content_h, reader_state);
+            ui_reader_view_save_local_position(ctx, reader_state);
+        }
+        snprintf(status, status_size, "Font size %d", next_font_size);
+        return 1;
+    }
+    case UI_SETTINGS_ITEM_DARK_MODE:
+        ui_dark_mode = !ui_dark_mode;
+        preferences_state_save_dark_mode(ctx, ui_dark_mode);
+        snprintf(status, status_size, "Dark mode %s", ui_dark_mode ? "on" : "off");
+        return 1;
+    case UI_SETTINGS_ITEM_BRIGHTNESS:
+        if (!brightness_level) {
+            return 0;
+        }
+        if (ui_platform_step_brightness(ctx, tg5040_input, direction < 0 ? -1 : 1,
+                                        brightness_level) != 0) {
+            snprintf(status, status_size, "Unable to adjust brightness");
+            return 0;
+        }
+        snprintf(status, status_size, "Brightness %d/10", *brightness_level);
+        return 1;
+    case UI_SETTINGS_ITEM_ROTATION: {
+        UiRotation next_rotation = direction < 0 ?
+            (UiRotation)ui_rotation_prev(*rotation) :
+            ui_rotation_next(*rotation);
+
+        *rotation = next_rotation;
+        *current_layout = ui_layout_for_rotation(*rotation);
+        if (ui_recreate_scene_texture(renderer, scene_texture, current_layout) != 0) {
+            snprintf(status, status_size, "Unable to rotate view");
+            return -1;
+        }
+        if (settings_state->origin == UI_SETTINGS_ORIGIN_READER && reader_state) {
+            ui_reader_view_rewrap(body_font, current_layout->reader_content_w,
+                                  current_layout->reader_content_h, reader_state);
+        }
+        preferences_state_save_rotation(ctx, *rotation);
+        snprintf(status, status_size, "%s", ui_rotation_label(*rotation));
+        return 1;
+    }
+    case UI_SETTINGS_ITEM_LOGOUT:
+    default:
+        return 0;
+    }
+}
+
 static void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
                                    ReaderViewState *state, float progress, float selected_pos,
                                    const UiLayout *layout) {
@@ -2271,6 +2641,8 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     UiMotionState motion_state;
     UiHapticState haptic_state;
     UiBatteryState battery_state;
+    SettingsFlowState settings_state;
+    int preferred_reader_font_size = UI_READER_CONTENT_FONT_SIZE;
     Uint32 poor_network_toast_until = 0;
     Uint32 exit_confirm_until = 0;
     Uint32 reader_exit_confirm_until = 0;
@@ -2301,6 +2673,7 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     memset(&motion_state, 0, sizeof(motion_state));
     memset(&haptic_state, 0, sizeof(haptic_state));
     memset(&battery_state, 0, sizeof(battery_state));
+    ui_settings_flow_state_reset(&settings_state);
     snprintf(qr_path, sizeof(qr_path), "%s/weread-login-qr.png", ctx->data_dir);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_JOYSTICK) != 0) {
@@ -2362,6 +2735,19 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
     ui_dark_mode = preferences_state_load_dark_mode(ctx);
     if (preferences_state_load_brightness_level(ctx, &brightness_level) == 0) {
         ui_platform_apply_brightness_level(tg5040_input, brightness_level);
+    }
+    (void)preferences_state_load_reader_font_size(ctx, &preferred_reader_font_size);
+    {
+        int saved_rotation = 0;
+
+        if (preferences_state_load_rotation(ctx, &saved_rotation) == 0) {
+            rotation = (UiRotation)saved_rotation;
+            current_layout = ui_layout_for_rotation(rotation);
+            if (ui_recreate_scene_texture(renderer, &scene_texture, &current_layout) != 0) {
+                fprintf(stderr, "Failed to apply saved rotation: %s\n", SDL_GetError());
+                goto cleanup;
+            }
+        }
     }
 
     shelf_nuxt = shelf_state_load_cache(ctx);
@@ -2460,6 +2846,12 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                         login_active = 0;
                         login_poll.stop = 1;
                         ui_force_exit_from_login(&haptic_state);
+                    } else if (view == VIEW_SETTINGS) {
+                        ui_settings_clear_logout_confirm(&settings_state);
+                        if (ui_settings_flow_close(&settings_state, &view, &selected) == 0) {
+                            render_requested = 1;
+                            ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
+                        }
                     } else if (view == VIEW_READER) {
                         if (reader_state.catalog_open) {
                             reader_state.catalog_open = 0;
@@ -2491,36 +2883,6 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                             ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
                         }
                     }
-                } else if (ui_event_is_dark_mode_toggle(&event, tg5040_input,
-                                                        tg5040_select_pressed)) {
-                    ui_dark_mode = !ui_dark_mode;
-                    preferences_state_save_dark_mode(ctx, ui_dark_mode);
-                    render_requested = 1;
-                    ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 40);
-                } else if (ui_event_is_brightness_up(&event, tg5040_input,
-                                                     tg5040_start_pressed)) {
-                    if (ui_platform_step_brightness(ctx, tg5040_input, 1,
-                                                    &brightness_level) != 0) {
-                        snprintf(shelf_status, sizeof(shelf_status),
-                                 "\xE6\x97\xA0\xE6\xB3\x95\xE8\xB0\x83\xE6\x95\xB4\xE4\xBA\xAE\xE5\xBA\xA6");
-                    } else {
-                        snprintf(shelf_status, sizeof(shelf_status),
-                                 "\xE4\xBA\xAE\xE5\xBA\xA6 %d/10", brightness_level);
-                        ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
-                    }
-                    render_requested = 1;
-                } else if (ui_event_is_brightness_down(&event, tg5040_input,
-                                                       tg5040_start_pressed)) {
-                    if (ui_platform_step_brightness(ctx, tg5040_input, -1,
-                                                    &brightness_level) != 0) {
-                        snprintf(shelf_status, sizeof(shelf_status),
-                                 "\xE6\x97\xA0\xE6\xB3\x95\xE8\xB0\x83\xE6\x95\xB4\xE4\xBA\xAE\xE5\xBA\xA6");
-                    } else {
-                        snprintf(shelf_status, sizeof(shelf_status),
-                                 "\xE4\xBA\xAE\xE5\xBA\xA6 %d/10", brightness_level);
-                        ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
-                    }
-                    render_requested = 1;
                 } else if (ui_event_is_lock_button(&event) &&
                            frame_now >= lock_button_ignore_until &&
                            (last_lock_trigger_tick == 0 ||
@@ -2544,25 +2906,17 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                             break;
                         }
                     }
-                } else if (ui_event_is_rotate_combo(&event, tg5040_input,
-                                                    tg5040_select_pressed,
-                                                    tg5040_start_pressed)) {
-                    rotation = ui_rotation_next(rotation);
-                    current_layout = ui_layout_for_rotation(rotation);
-                    if (ui_recreate_scene_texture(renderer, &scene_texture, &current_layout) != 0) {
-                        fprintf(stderr, "Failed to recreate scene texture: %s\n", SDL_GetError());
-                        running = 0;
-                        break;
-                    }
-                    if (view == VIEW_READER) {
-                        ui_reader_view_rewrap(body_font, current_layout.reader_content_w,
-                                              current_layout.reader_content_h, &reader_state);
-                    }
-                    ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 60);
                 } else if (view == VIEW_SHELF) {
                     cJSON *books = shelf_nuxt ? shelf_books(shelf_nuxt) : NULL;
                     int count = books && cJSON_IsArray(books) ? cJSON_GetArraySize(books) : 0;
-                    if ((ui_event_is_down(&event, tg5040_input) || ui_event_is_right(&event, tg5040_input)) &&
+                    if (ui_event_is_settings_open(&event, tg5040_input)) {
+                        if (ui_settings_flow_open_from_shelf(&settings_state, &view, 1,
+                                                             selected) == 0) {
+                            exit_confirm_until = 0;
+                            render_requested = 1;
+                            ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 45);
+                        }
+                    } else if ((ui_event_is_down(&event, tg5040_input) || ui_event_is_right(&event, tg5040_input)) &&
                         count > 0 && selected + 1 < count) {
                         selected++;
                         render_requested = 1;
@@ -2646,10 +3000,92 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                                                          reader_open.font_size);
                         ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 60);
                     }
+                } else if (view == VIEW_SETTINGS) {
+                    int item_count = ui_settings_visible_item_count();
+
+                    if (ui_event_is_down(&event, tg5040_input) &&
+                        settings_state.selected + 1 < item_count) {
+                        settings_state.selected++;
+                        ui_settings_clear_logout_confirm(&settings_state);
+                        render_requested = 1;
+                        ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 25);
+                    } else if (ui_event_is_up(&event, tg5040_input) &&
+                               settings_state.selected > 0) {
+                        settings_state.selected--;
+                        ui_settings_clear_logout_confirm(&settings_state);
+                        render_requested = 1;
+                        ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 25);
+                    } else if (ui_event_is_confirm(&event, tg5040_input) &&
+                               settings_state.selected == UI_SETTINGS_ITEM_LOGOUT) {
+                        if (!settings_state.logout_confirm_armed) {
+                            settings_state.logout_confirm_armed = 1;
+                            snprintf(shelf_status, sizeof(shelf_status),
+                                     "Press A again to log out");
+                            render_requested = 1;
+                            ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_NAV_MS, 35);
+                        } else {
+                            SessionLogoutResult logout_result = {0};
+                            int logout_rc = session_service_logout(ctx, &logout_result);
+
+                            ui_settings_clear_logout_confirm(&settings_state);
+                            if (logout_rc == 0 && logout_result.local_cleanup_ok) {
+                                shelf_status[0] = '\0';
+                                ui_transition_to_login_required(&view, &session, &login_active,
+                                                                &settings_state, &reader_state,
+                                                                &shelf_nuxt, &shelf_covers,
+                                                                &shelf_cover_download,
+                                                                &shelf_cover_download_thread_handle,
+                                                                &qr_texture, &selected,
+                                                                &exit_confirm_until,
+                                                                &reader_exit_confirm_until,
+                                                                status, sizeof(status),
+                                                                ui_logout_status_text(
+                                                                    logout_result.outcome));
+                            } else {
+                                snprintf(shelf_status, sizeof(shelf_status), "%s",
+                                         ui_logout_status_text(SESSION_LOGOUT_LOCAL_FAILED));
+                            }
+                            render_requested = 1;
+                            ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 45);
+                        }
+                    } else if ((ui_event_is_left(&event, tg5040_input) ||
+                                ui_event_is_right(&event, tg5040_input) ||
+                                ui_event_is_confirm(&event, tg5040_input)) &&
+                               settings_state.selected != UI_SETTINGS_ITEM_LOGOUT) {
+                        int apply_result = ui_settings_apply(&settings_state, ctx,
+                                                             renderer, body_font,
+                                                             &reader_state,
+                                                             &preferred_reader_font_size,
+                                                             tg5040_input,
+                                                             &brightness_level,
+                                                             &rotation,
+                                                             &current_layout,
+                                                             &scene_texture,
+                                                             shelf_status,
+                                                             sizeof(shelf_status),
+                                                             ui_event_is_left(&event, tg5040_input) ? -1 : 1);
+
+                        ui_settings_clear_logout_confirm(&settings_state);
+                        if (apply_result < 0) {
+                            running = 0;
+                            break;
+                        }
+                        if (apply_result > 0) {
+                            render_requested = 1;
+                            ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 45);
+                        }
+                    }
                 } else if (view == VIEW_READER) {
                     int total_pages = ui_reader_view_total_pages(&reader_state);
                     ui_reader_view_note_progress_activity(&reader_state, SDL_GetTicks());
-                    if (reader_state.catalog_open) {
+                    if (ui_event_is_settings_open(&event, tg5040_input) &&
+                        !reader_state.catalog_open) {
+                        if (ui_settings_flow_open_from_reader(&settings_state, &view, 1) == 0) {
+                            reader_exit_confirm_until = 0;
+                            render_requested = 1;
+                            ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 45);
+                        }
+                    } else if (reader_state.catalog_open) {
                         if (ui_event_is_back(&event, tg5040_input) ||
                             ui_event_is_catalog_toggle(&event, tg5040_input)) {
                             reader_state.catalog_open = 0;
@@ -2871,31 +3307,6 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                             }
                             free(target);
                         }
-                    } else if (ui_event_is_tg5040_button_down(&event, tg5040_input, TG5040_JOY_Y) ||
-                               ui_event_is_keydown(&event, SDLK_EQUALS) ||
-                               ui_event_is_keydown(&event, SDLK_MINUS)) {
-                        /* Y button cycles font size: 28 -> 32 -> 36 -> 40 -> 44 -> 28 */
-                        /* +/- keys increase/decrease */
-                        if (reader_state.content_font_size <= 0) {
-                            reader_state.content_font_size = UI_READER_CONTENT_FONT_SIZE;
-                        }
-                        if (ui_event_is_keydown(&event, SDLK_MINUS)) {
-                            reader_state.content_font_size -= 4;
-                            if (reader_state.content_font_size < 24) reader_state.content_font_size = 44;
-                        } else {
-                            reader_state.content_font_size += 4;
-                            if (reader_state.content_font_size > 44) reader_state.content_font_size = 24;
-                        }
-                        if (ui_reader_view_reset_content_font(body_font, &reader_state) != 0) {
-                            /* 无法应用字体大小 */
-                            snprintf(shelf_status, sizeof(shelf_status),
-                                     "\xE6\x97\xA0\xE6\xB3\x95\xE5\xBA\x94\xE7\x94\xA8\xE5\xAD\x97\xE4\xBD\x93\xE5\xA4\xA7\xE5\xB0\x8F");
-                            continue;
-                        }
-                        ui_reader_view_rewrap(body_font, current_layout.reader_content_w,
-                                              current_layout.reader_content_h, &reader_state);
-                        ui_reader_view_save_local_position(ctx, &reader_state);
-                        ui_platform_haptic_pulse(&haptic_state, UI_HAPTIC_CONFIRM_MS, 45);
                     }
                 }
             }
@@ -3239,6 +3650,11 @@ int ui_run(ApiContext *ctx, const char *font_path, const char *platform) {
                     render_login(renderer, title_font, body_font, &session, status,
                                  battery_state.text, &current_layout,
                                  &qr_texture, &qr_tex_w, &qr_tex_h);
+                } else if (view == VIEW_SETTINGS) {
+                    render_settings(renderer, title_font, body_font, &settings_state,
+                                    &reader_state, preferred_reader_font_size,
+                                    brightness_level, rotation, shelf_status,
+                                    battery_state.text, &current_layout);
                 } else if (view == VIEW_READER) {
                     render_reader(renderer, title_font, body_font, &reader_state,
                                   battery_state.text, &current_layout);

@@ -145,6 +145,11 @@ int ui_event_is_page_next(const SDL_Event *event, int tg5040_input) {
            ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_R1);
 }
 
+int ui_event_is_settings_open(const SDL_Event *event, int tg5040_input) {
+    return ui_event_is_keydown(event, SDLK_y) ||
+           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_Y);
+}
+
 int ui_any_joystick_button_pressed(SDL_Joystick **joysticks, int joystick_count, Uint8 button) {
     int i;
 
