@@ -88,6 +88,33 @@ void ui_shelf_flow_cover_download_maybe_start(ApiContext *ctx, ShelfCoverCache *
             return;
         }
     }
+
+    if (selected <= 0 && cache->has_article_entry) {
+        ShelfCoverEntry *entry = &cache->article_entry;
+
+        if (!entry->cover_url || !entry->cover_url[0] ||
+            !entry->cache_path[0] || entry->texture ||
+            entry->attempted || entry->download_failed) {
+            return;
+        }
+
+        ui_shelf_flow_cover_download_state_reset(state);
+        snprintf(state->data_dir, sizeof(state->data_dir), "%s", ctx->data_dir);
+        snprintf(state->ca_file, sizeof(state->ca_file), "%s", ctx->ca_file);
+        snprintf(state->cover_url, sizeof(state->cover_url), "%s", entry->cover_url);
+        snprintf(state->cache_path, sizeof(state->cache_path), "%s", entry->cache_path);
+        state->entry_index = -1;
+        state->running = 1;
+        entry->attempted = 1;
+        *thread_handle = SDL_CreateThread(ui_shelf_flow_cover_download_thread,
+                                          "weread-cover-download", state);
+        if (!*thread_handle) {
+            state->running = 0;
+            state->failed = 1;
+            entry->attempted = 0;
+            entry->download_failed = 1;
+        }
+    }
 }
 
 void ui_shelf_flow_cover_download_poll(ShelfCoverCache *cache,
@@ -104,6 +131,8 @@ void ui_shelf_flow_cover_download_poll(ShelfCoverCache *cache,
 
     if (state->entry_index >= 0 && state->entry_index < cache->count) {
         entry = &cache->entries[state->entry_index];
+    } else if (state->entry_index < 0 && cache->has_article_entry) {
+        entry = &cache->article_entry;
     }
     if (entry) {
         entry->attempted = 0;

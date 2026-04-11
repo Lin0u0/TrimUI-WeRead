@@ -661,6 +661,29 @@ static char *dup_or_null(const char *s) {
     return s ? strdup(s) : NULL;
 }
 
+static char *shelf_cover_normalize_url(const char *url) {
+    static const char http_qlogo_prefix[] = "http://wx.qlogo.cn/";
+    static const char https_qlogo_prefix[] = "https://wx.qlogo.cn/";
+
+    if (!url || !url[0]) {
+        return NULL;
+    }
+    if (strncmp(url, http_qlogo_prefix, strlen(http_qlogo_prefix)) == 0) {
+        size_t suffix_len = strlen(url) - strlen(http_qlogo_prefix);
+        char *normalized = malloc(strlen(https_qlogo_prefix) + suffix_len + 1);
+
+        if (!normalized) {
+            return NULL;
+        }
+        memcpy(normalized, https_qlogo_prefix, strlen(https_qlogo_prefix));
+        memcpy(normalized + strlen(https_qlogo_prefix),
+               url + strlen(http_qlogo_prefix),
+               suffix_len + 1);
+        return normalized;
+    }
+    return strdup(url);
+}
+
 static void shelf_cover_entry_reset(ShelfCoverEntry *entry) {
     if (!entry) {
         return;
@@ -690,19 +713,27 @@ static void shelf_cover_cache_reset(ShelfCoverCache *cache) {
             shelf_cover_entry_reset(&cache->entries[i]);
         }
     }
+    if (cache->has_article_entry) {
+        shelf_cover_entry_reset(&cache->article_entry);
+    }
     free(cache->entries);
     memset(cache, 0, sizeof(*cache));
 }
 
 static void shelf_cover_cache_trim(ShelfCoverCache *cache, int selected, int keep_radius) {
-    if (!cache || !cache->entries) {
+    if (!cache) {
         return;
     }
 
-    for (int i = 0; i < cache->count; i++) {
-        if (i < selected - keep_radius || i > selected + keep_radius) {
-            shelf_cover_entry_release_texture(&cache->entries[i]);
+    if (cache->entries) {
+        for (int i = 0; i < cache->count; i++) {
+            if (i < selected - keep_radius || i > selected + keep_radius) {
+                shelf_cover_entry_release_texture(&cache->entries[i]);
+            }
         }
+    }
+    if (cache->has_article_entry && selected > 0) {
+        shelf_cover_entry_release_texture(&cache->article_entry);
     }
 }
 
@@ -907,7 +938,22 @@ static int shelf_cover_prepare_nearest(ApiContext *ctx, SDL_Renderer *renderer,
     int center;
 
     if (!ctx || !renderer || !cache || !cache->entries || cache->count <= 0) {
+        if (ctx && renderer && cache && cache->has_article_entry &&
+            selected_pos <= 0.0f &&
+            !cache->article_entry.texture &&
+            cache->article_entry.cache_path[0] &&
+            access(cache->article_entry.cache_path, F_OK) == 0) {
+            return shelf_cover_prepare(ctx, renderer, &cache->article_entry) == 0;
+        }
         return 0;
+    }
+
+    if (cache->has_article_entry &&
+        selected_pos <= 0.0f &&
+        !cache->article_entry.texture &&
+        cache->article_entry.cache_path[0] &&
+        access(cache->article_entry.cache_path, F_OK) == 0) {
+        return shelf_cover_prepare(ctx, renderer, &cache->article_entry) == 0;
     }
 
     center = (int)lroundf(selected_pos);
@@ -938,6 +984,7 @@ static int shelf_cover_prepare_nearest(ApiContext *ctx, SDL_Renderer *renderer,
 static void shelf_cover_cache_build(ApiContext *ctx, cJSON *nuxt, ShelfCoverCache *cache) {
     char covers_dir[1024];
     char file_name[256];
+    ShelfArticleSlotInfo article_slot;
     int count;
 
     shelf_cover_cache_reset(cache);
@@ -968,7 +1015,7 @@ static void shelf_cover_cache_build(ApiContext *ctx, cJSON *nuxt, ShelfCoverCach
         const char *cover = shelf_cover_url(book);
 
         entry->book_id = dup_or_null(book_id);
-        entry->cover_url = dup_or_null(cover);
+        entry->cover_url = shelf_cover_normalize_url(cover);
         if (book_id && *book_id) {
             if (strlen(book_id) + strlen(".img") + 1 > sizeof(file_name) ||
                 snprintf(file_name, sizeof(file_name), "%s.img", book_id) < 0 ||
@@ -978,6 +1025,23 @@ static void shelf_cover_cache_build(ApiContext *ctx, cJSON *nuxt, ShelfCoverCach
             }
         } else {
             if (snprintf(file_name, sizeof(file_name), "book-%d.img", i) < 0 ||
+                ui_join_path_checked(entry->cache_path, sizeof(entry->cache_path),
+                                     covers_dir, file_name) != 0) {
+                entry->cache_path[0] = '\0';
+            }
+        }
+    }
+
+    if (shelf_article_slot_info(nuxt, &article_slot) &&
+        article_slot.entry_id && article_slot.entry_id[0]) {
+        ShelfCoverEntry *entry = &cache->article_entry;
+
+        cache->has_article_entry = 1;
+        entry->book_id = dup_or_null(article_slot.entry_id);
+        entry->cover_url = shelf_cover_normalize_url(article_slot.cover_url);
+        if (entry->book_id && *entry->book_id) {
+            if (strlen(entry->book_id) + strlen(".img") + 1 > sizeof(file_name) ||
+                snprintf(file_name, sizeof(file_name), "%s.img", entry->book_id) < 0 ||
                 ui_join_path_checked(entry->cache_path, sizeof(entry->cache_path),
                                      covers_dir, file_name) != 0) {
                 entry->cache_path[0] = '\0';
@@ -1557,8 +1621,14 @@ static void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font 
                        (int)lroundf(offset * (float)(cover_w + card_gap));
 
         if (i < 0) {
-            render_shelf_article_slot(renderer, title_font, body_font, cover_rect,
-                                      &article_slot, emphasis);
+            if (cover_cache && cover_cache->has_article_entry) {
+                render_shelf_cover(renderer, body_font, ink, cover_rect,
+                                   &cover_cache->article_entry,
+                                   article_slot.title, emphasis);
+            } else {
+                render_shelf_article_slot(renderer, title_font, body_font, cover_rect,
+                                          &article_slot, emphasis);
+            }
             continue;
         }
 

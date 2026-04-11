@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.8
+
+`0.1.8` finishes the公众号封面 path so article entries now look like proper shelf items instead of falling back to the generic article card whenever they are adjacent to the current book selection.
+
+### Highlights
+
+- Added cover URL extraction for article shelf entries and wired article slots into the same cover cache used by normal books
+- Normalized `wx.qlogo.cn` article cover URLs from `http` to `https` before download so the device uses the modern endpoint consistently
+- Added article-aware cover download polling and cache-path handling, letting visible article cards fetch and reuse real cached artwork
+- Fixed shelf texture trimming so the article cover stays visible while the first normal book is selected, instead of disappearing whenever the article card is off-focus but still on screen
+
+### Notes
+
+This release is intentionally narrow: it keeps the mixed book/article shelf model from `0.1.7`, but closes the last obvious UI gap by making公众号文章 feel visually native on the shelf. The debugging logs used to verify the device-side behavior were removed before release, so runtime logging stays clean.
+
 ## 0.1.7
 
 `0.1.7` finishes the mixed bookshelf/article reading flow so WeRead books and公众号文章 can coexist cleanly on TrimUI without regressing the normal book path.

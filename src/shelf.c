@@ -68,6 +68,34 @@ static const char *shelf_entry_review_id(cJSON *book, cJSON *reader_item) {
     return NULL;
 }
 
+static const char *shelf_entry_cover_url(cJSON *book) {
+    static const char *paths[] = {
+        "cover",
+        "coverUrl",
+        "cover_url",
+        "coverMiddle",
+        "coverMid",
+        "coverLarge",
+        "coverSmall",
+        "bookCover",
+        "bookInfo.cover",
+        "bookInfo.coverUrl",
+        "bookInfo.coverLarge",
+        "bookInfo.coverMiddle",
+        "bookInfo.coverSmall",
+        "bookInfo.bookCover",
+        NULL
+    };
+
+    for (int i = 0; paths[i]; i++) {
+        const char *value = json_get_string(book, paths[i]);
+        if (value && *value) {
+            return value;
+        }
+    }
+    return NULL;
+}
+
 static int shelf_entry_id_is_article(const char *entry_id) {
     return entry_id && strncmp(entry_id, "MP", 2) == 0;
 }
@@ -288,6 +316,7 @@ int shelf_article_slot_info(cJSON *nuxt, ShelfArticleSlotInfo *info) {
             info->source_index = i;
             info->entry_id = entry_id;
             info->title = json_get_string(book, "title");
+            info->cover_url = shelf_entry_cover_url(book);
             info->source_target = matched_reader_item ?
                 shelf_reader_target_for_entry_id(urls, entry_id) :
                 shelf_reader_target(urls, i);

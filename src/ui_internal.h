@@ -244,6 +244,8 @@ typedef struct {
 typedef struct {
     ShelfCoverEntry *entries;
     int count;
+    ShelfCoverEntry article_entry;
+    int has_article_entry;
 } ShelfCoverCache;
 
 typedef struct {

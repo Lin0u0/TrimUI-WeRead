@@ -1,12 +1,13 @@
 {
   "name": "WeRead",
-  "version": "v0.1.7",
+  "version": "v0.1.8",
   "type": "TOOL",
   "description": "A native WeRead client for TrimUI handhelds.",
   "author": "Lin0u0",
   "repo_url": "https://github.com/Lin0u0/TrimUI-WeRead",
   "release_filename": "WeRead.pakz",
   "changelog": {
+    "v0.1.8": "Added real cover art for公众号文章, normalized qlogo cover URLs, and fixed the shelf rendering path so article covers stay visible even when the first normal book is selected.",
     "v0.1.7": "Added first-class WeRead article support with separate shelf handling, article catalogs and font sizing, smoother cross-chapter paging, faster catalog opening, and cooler shelf idle behavior.",
     "v0.1.6": "Hardened the TrimUI release path with preflight diagnostics, package archive audits for NextUI/Stock/CrossMix, and CI that now runs the same verified make-based release flow as maintainers.",
     "v0.1.5": "Reduced CPU usage and device heat during idle reading and browsing with event-driven sleep, non-blocking haptics, and smarter render skipping.",

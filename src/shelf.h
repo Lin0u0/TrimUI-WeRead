@@ -8,6 +8,7 @@ typedef struct {
     int source_index;
     const char *entry_id;
     const char *title;
+    const char *cover_url;
     const char *source_target;
     const char *review_id;
 } ShelfArticleSlotInfo;
