@@ -3,12 +3,19 @@
 
 #include "shelf.h"
 
+typedef int (*ShelfServiceResolveReviewIdFn)(ApiContext *ctx, const char *entry_id,
+                                             char *review_id, size_t review_id_size);
+
 int shelf_service_print(ApiContext *ctx);
 int shelf_service_print_cached(ApiContext *ctx);
 cJSON *shelf_service_load(ApiContext *ctx, int allow_cache, int *from_cache);
 int shelf_service_load_resume(ApiContext *ctx, char *target, size_t target_size,
                               int *font_size, int *content_font_size);
 const char *shelf_service_reader_target(cJSON *urls, int index);
+void shelf_service_set_review_id_override(ShelfServiceResolveReviewIdFn fn);
+int shelf_service_extract_review_id_response(const char *response,
+                                             char *review_id,
+                                             size_t review_id_size);
 int shelf_service_prepare_resume(ApiContext *ctx, char *target, size_t target_size,
                                  int *font_size, char *loading_title,
                                  size_t loading_title_size, char *status,
@@ -19,6 +26,11 @@ int shelf_service_prepare_selected_open(cJSON *shelf_nuxt, int selected,
                                         char *loading_title, size_t loading_title_size,
                                         char *status, size_t status_size,
                                         char *shelf_status, size_t shelf_status_size);
+int shelf_service_prepare_article_open(ApiContext *ctx, cJSON *shelf_nuxt, int font_size,
+                                       char *target, size_t target_size,
+                                       char *loading_title, size_t loading_title_size,
+                                       char *status, size_t status_size,
+                                       char *shelf_status, size_t shelf_status_size);
 int shelf_service_download_cover_to_cache(const char *data_dir, const char *ca_file,
                                           const char *url, const char *path);
 

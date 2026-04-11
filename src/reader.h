@@ -3,6 +3,11 @@
 
 #include "api.h"
 
+typedef enum {
+    READER_DOCUMENT_KIND_BOOK = 0,
+    READER_DOCUMENT_KIND_ARTICLE = 1,
+} ReaderDocumentKind;
+
 typedef struct {
     char *chapter_uid;
     char *target;
@@ -15,6 +20,7 @@ typedef struct {
 } ReaderCatalogItem;
 
 typedef struct {
+    ReaderDocumentKind kind;
     char *target;
     char *prev_target;
     char *next_target;
@@ -50,11 +56,21 @@ typedef struct {
 #define READER_REPORT_ERROR (-1)
 #define READER_REPORT_SESSION_EXPIRED (-2)
 
+typedef int (*ReaderFetchPageFn)(ApiContext *ctx, const char *url, Buffer *buf);
+
+void reader_set_fetch_override(ReaderFetchPageFn fn);
 int reader_load(ApiContext *ctx, const char *target, int font_size, ReaderDocument *doc);
 int reader_prefetch(ApiContext *ctx, const char *target, int font_size, ReaderDocument *doc);
 int reader_warmup_font(ApiContext *ctx);
+void reader_catalog_items_free(ReaderCatalogItem *items, int count);
 int reader_focus_catalog(ApiContext *ctx, ReaderDocument *doc);
 int reader_ensure_full_catalog(ApiContext *ctx, ReaderDocument *doc);
+int reader_fetch_catalog_chunk(ApiContext *ctx, const char *book_id, int type,
+                               int range_start, int range_end, const char *current_chapter_uid,
+                               ReaderCatalogItem **items_out, int *count_out,
+                               int *first_idx_out, int *last_idx_out);
+int reader_merge_catalog_chunk(ReaderDocument *doc, ReaderCatalogItem *chunk, int chunk_count,
+                               int *added_count);
 int reader_expand_catalog(ApiContext *ctx, ReaderDocument *doc, int direction, int *added_count);
 int reader_estimate_chapter_offset(const ReaderDocument *doc, int current_page, int total_pages);
 int reader_report_progress_at_offset(ApiContext *ctx, const ReaderDocument *doc, int current_page,

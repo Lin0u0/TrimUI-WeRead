@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.7
+
+`0.1.7` finishes the mixed bookshelf/article reading flow so WeRead books and公众号文章 can coexist cleanly on TrimUI without regressing the normal book path.
+
+### Highlights
+
+- Added a dedicated article shelf flow that separates公众号文章 from normal books, keeps counts independent, and resolves article opens through the Kindle-style `reader -> mpdetail` path
+- Fixed book opening and resume behavior when shelf entry order and `bookReaderUrls` order differ, so normal books no longer stall on chapter loading when article entries are present
+- Added article-aware rendering with adjustable font size, Unicode text rendering, article catalogs from `mpChaptersInfo`, and article progress isolation from normal book resume state
+- Restored continuous cross-chapter paging for both books and articles, including held page-turn behavior across chapter boundaries
+- Moved full book catalog hydration off the first catalog-open action and into background chunk loading, so directory opening feels much faster while still filling in the full table of contents
+- Reduced shelf idle heat by limiting background cover downloads to the currently visible neighborhood instead of walking the whole shelf queue
+
+### Notes
+
+This release is mainly about making公众号文章 a first-class reading target instead of a fragile compatibility path. The biggest user-facing changes are that books stay stable, articles now behave like real entries with working catalogs and font controls, and the device should spend less time doing unnecessary background work while sitting on the shelf screen.
+
 ## 0.1.6
 
 `0.1.6` hardens the build, packaging, and release path so maintainers can ship TrimUI packages with higher confidence and clearer diagnostics.

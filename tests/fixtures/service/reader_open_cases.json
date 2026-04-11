@@ -42,6 +42,7 @@
         }
       ],
       "expectedDocTarget": "https://weread.qq.com/web/reader/book-1-start",
+      "expectedDocKind": "book",
       "expectedSourceTarget": "https://weread.qq.com/web/reader/book-1-start",
       "expectedContentFontSize": 40,
       "expectedInitialPage": 7,
@@ -87,6 +88,7 @@
         }
       ],
       "expectedDocTarget": "https://weread.qq.com/web/reader/book-2-chapter-7",
+      "expectedDocKind": "book",
       "expectedSourceTarget": "https://weread.qq.com/web/reader/book-2-start",
       "expectedContentFontSize": 36,
       "expectedInitialPage": 0,
@@ -122,11 +124,165 @@
         }
       ],
       "expectedDocTarget": "https://weread.qq.com/web/reader/book-3-chapter-5",
+      "expectedDocKind": "book",
       "expectedSourceTarget": "https://weread.qq.com/web/reader/book-3-start",
       "expectedContentFontSize": 42,
       "expectedInitialPage": 11,
       "expectedInitialOffset": 901,
       "expectedHonorSavedPosition": 0
+    },
+    {
+      "name": "article-open-ignores-book-position",
+      "sourceTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-123&fs=3",
+      "bookIdHint": "book-stale",
+      "fontSize": 3,
+      "localPosition": {
+        "bookId": "book-stale",
+        "sourceTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-123&fs=3",
+        "target": "https://weread.qq.com/web/reader/book-stale-chapter-9",
+        "fontSize": 3,
+        "contentFontSize": 48,
+        "currentPage": 19,
+        "currentOffset": 1900
+      },
+      "documents": [
+        {
+          "kind": "article",
+          "target": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-123&fs=3",
+          "bookTitle": "公众号文章",
+          "chapterTitle": "公众号文章",
+          "contentText": "第一段\n第二段"
+        }
+      ],
+      "expectedDocTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-123&fs=3",
+      "expectedDocKind": "article",
+      "expectedSourceTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-123&fs=3",
+      "expectedContentFontSize": 36,
+      "expectedInitialPage": 0,
+      "expectedInitialOffset": 0,
+      "expectedHonorSavedPosition": 1,
+      "expectNoDocBookId": true
+    },
+    {
+      "name": "article-reader-shell-source-ignores-book-position",
+      "sourceTarget": "1564272224d505f5758535f33393331323731353233102",
+      "bookIdHint": "MP_WXS_3931271523",
+      "fontSize": 3,
+      "localPosition": {
+        "bookId": "MP_WXS_3931271523",
+        "sourceTarget": "1564272224d505f5758535f33393331323731353233102",
+        "target": "https://weread.qq.com/web/reader/book-stale-chapter-9",
+        "fontSize": 3,
+        "contentFontSize": 48,
+        "currentPage": 19,
+        "currentOffset": 1900
+      },
+      "documents": [
+        {
+          "loadTarget": "1564272224d505f5758535f33393331323731353233102",
+          "kind": "article",
+          "target": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-123&fs=3",
+          "bookTitle": "公众号文章",
+          "chapterTitle": "公众号文章",
+          "contentText": "第一段\n第二段"
+        }
+      ],
+      "expectedDocTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-123&fs=3",
+      "expectedDocKind": "article",
+      "expectedSourceTarget": "1564272224d505f5758535f33393331323731353233102",
+      "expectedContentFontSize": 36,
+      "expectedInitialPage": 0,
+      "expectedInitialOffset": 0,
+      "expectedHonorSavedPosition": 1,
+      "expectNoDocBookId": true
+    },
+    {
+      "name": "article-open-failure",
+      "sourceTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=missing&fs=3",
+      "fontSize": 3,
+      "documents": [],
+      "expectedResult": -1
+    }
+  ],
+  "pageCases": [
+    {
+      "name": "article-page-success",
+      "target": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-123&fs=3",
+      "expectedUrl": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-123&fs=3",
+      "fixturePath": "service/mpdetail_article_valid.html",
+      "fontSize": 3,
+      "expectedResult": 0,
+      "expectedDocKind": "article",
+      "expectedDocTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-123&fs=3",
+      "expectedBookTitle": "测试公众号文章",
+      "expectedContentContains": "第一段文章内容",
+      "expectedUseContentFont": false
+    },
+    {
+      "name": "article-page-embedded-shell-success",
+      "target": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=embedded&fs=3",
+      "expectedUrl": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=embedded&fs=3",
+      "fixturePath": "service/mpdetail_article_embedded_shell.html",
+      "fontSize": 3,
+      "expectedResult": 0,
+      "expectedDocKind": "article",
+      "expectedDocTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=embedded&fs=3",
+      "expectedBookTitle": "测试公众号文章",
+      "expectedContentContains": "第一段文章内容",
+      "unexpectedContentContains": "window.moon_map",
+      "expectedUseContentFont": false
+    },
+    {
+      "name": "article-page-catalog-success",
+      "target": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-current&fs=3",
+      "expectedUrl": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-current&fs=3",
+      "fixturePath": "service/mpdetail_article_catalog.html",
+      "fontSize": 3,
+      "expectedResult": 0,
+      "expectedDocKind": "article",
+      "expectedDocTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-current&fs=3",
+      "expectedBookTitle": "测试公众号专栏",
+      "expectedChapterTitle": "当前篇",
+      "expectedContentContains": "这是当前公众号文章的正文",
+      "expectedUseContentFont": false,
+      "expectedCatalogCount": 3,
+      "expectedCurrentChapterUid": "review-current",
+      "expectedCurrentChapterIdx": 2,
+      "expectedPrevTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-prev&fs=3",
+      "expectedNextTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-next&fs=3",
+      "expectedCatalogTitles": [
+        "上一篇",
+        "当前篇",
+        "下一篇"
+      ]
+    },
+    {
+      "name": "article-page-invalid-reviewid",
+      "target": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=invalid&fs=3",
+      "expectedUrl": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=invalid&fs=3",
+      "fixturePath": "service/mpdetail_article_invalid.html",
+      "fontSize": 3,
+      "expectedResult": -1
+    },
+    {
+      "name": "article-reader-shell-success",
+      "target": "1564272224d505f5758535f33393331323731353233102",
+      "fontSize": 3,
+      "fetches": [
+        {
+          "expectedUrl": "https://weread.qq.com/wrwebsimplenjlogic/reader?bc=1564272224d505f5758535f33393331323731353233102&fs=3",
+          "fixturePath": "service/reader_article_shell.html"
+        },
+        {
+          "expectedUrl": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-123&fs=3",
+          "fixturePath": "service/mpdetail_article_valid.html"
+        }
+      ],
+      "expectedResult": 0,
+      "expectedDocKind": "article",
+      "expectedDocTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-123&fs=3",
+      "expectedBookTitle": "测试公众号文章",
+      "expectedContentContains": "第一段文章内容"
     }
   ]
 }

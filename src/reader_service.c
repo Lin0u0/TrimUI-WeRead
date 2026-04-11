@@ -14,6 +14,19 @@ static char *reader_service_dup_or_null(const char *value) {
     return strdup(value);
 }
 
+static int reader_service_target_is_article(const char *target) {
+    if (!target || !*target) {
+        return 0;
+    }
+    return strstr(target, "mpdetail?") != NULL || strstr(target, "/mpdetail") != NULL;
+}
+
+static int reader_service_document_supports_local_position(const ReaderDocument *doc) {
+    return doc &&
+        doc->kind == READER_DOCUMENT_KIND_BOOK &&
+        doc->book_id && doc->book_id[0];
+}
+
 static int reader_service_load_document(ApiContext *ctx, const char *target, int font_size,
                                         ReaderDocument *doc) {
     if (reader_service_test_ops.load) {
@@ -104,6 +117,7 @@ int reader_service_prepare_open_document(ApiContext *ctx, const char *source_tar
     int initial_page = 0;
     int honor_saved_position = 1;
     int rc = -1;
+    int source_is_article = reader_service_target_is_article(source_target);
 
     if (!ctx || !source_target || !*source_target || !result) {
         return -1;
@@ -111,20 +125,53 @@ int reader_service_prepare_open_document(ApiContext *ctx, const char *source_tar
 
     memset(result, 0, sizeof(*result));
     snprintf(result->source_target, sizeof(result->source_target), "%s", source_target);
+    fprintf(stderr,
+            "reader-service-open: begin source=%s bookIdHint=%s font=%d article=%d\n",
+            source_target, book_id_hint && *book_id_hint ? book_id_hint : "(null)",
+            font_size, source_is_article);
 
-    if (book_id_hint && *book_id_hint &&
+    if (!source_is_article &&
+        book_id_hint && *book_id_hint &&
         reader_state_load_position(ctx, book_id_hint, source_target,
                                    saved_target, sizeof(saved_target),
                                    NULL, &saved_content_font_size,
                                    &saved_page, &saved_offset) == 0) {
         has_local_position = 1;
+        fprintf(stderr,
+                "reader-service-open: local-position by source bookId=%s savedTarget=%s page=%d offset=%d font=%d\n",
+                book_id_hint, saved_target, saved_page, saved_offset, saved_content_font_size);
     }
     if (!has_local_position) {
         (void)preferences_state_load_reader_font_size(ctx, &saved_content_font_size);
     }
 
     if (reader_service_load_document(ctx, source_target, font_size, &doc) != 0) {
+        fprintf(stderr, "reader-service-open: load failed source=%s\n", source_target);
         goto cleanup;
+    }
+    fprintf(stderr,
+            "reader-service-open: loaded kind=%s docTarget=%s bookId=%s chapterUid=%s chapterIdx=%d progressUid=%s progressIdx=%d savedOffset=%d\n",
+            doc.kind == READER_DOCUMENT_KIND_ARTICLE ? "article" : "book",
+            doc.target ? doc.target : "(null)",
+            doc.book_id ? doc.book_id : "(null)",
+            doc.chapter_uid ? doc.chapter_uid : "(null)",
+            doc.chapter_idx,
+            doc.progress_chapter_uid ? doc.progress_chapter_uid : "(null)",
+            doc.progress_chapter_idx,
+            doc.saved_chapter_offset);
+
+    if (doc.kind == READER_DOCUMENT_KIND_ARTICLE) {
+        has_local_position = 0;
+        saved_page = 0;
+        saved_offset = 0;
+        saved_content_font_size = 36;
+        (void)preferences_state_load_reader_font_size(ctx, &saved_content_font_size);
+        source_is_article = 1;
+        fprintf(stderr,
+                "reader-service-open: article document disables book position source=%s docTarget=%s font=%d\n",
+                source_target,
+                doc.target ? doc.target : "(null)",
+                saved_content_font_size);
     }
 
     {
@@ -145,7 +192,10 @@ int reader_service_prepare_open_document(ApiContext *ctx, const char *source_tar
         if (progress_target) {
             ReaderDocument progress_doc = {0};
 
+            fprintf(stderr, "reader-service-open: follow progress target=%s\n", progress_target);
             if (reader_service_load_document(ctx, progress_target, font_size, &progress_doc) != 0) {
+                fprintf(stderr, "reader-service-open: progress load failed target=%s\n",
+                        progress_target);
                 free(fetched_target);
                 goto cleanup;
             }
@@ -157,7 +207,8 @@ int reader_service_prepare_open_document(ApiContext *ctx, const char *source_tar
 
     has_cloud_position = reader_service_has_cloud_position(&doc);
 
-    if (!has_cloud_position && doc.book_id &&
+    if (!has_cloud_position &&
+        reader_service_document_supports_local_position(&doc) &&
         reader_state_load_position_by_book_id(ctx, doc.book_id,
                                               saved_source_target, sizeof(saved_source_target),
                                               saved_target, sizeof(saved_target),
@@ -166,6 +217,11 @@ int reader_service_prepare_open_document(ApiContext *ctx, const char *source_tar
         has_local_position = 1;
         snprintf(result->source_target, sizeof(result->source_target), "%s",
                  saved_source_target);
+        fprintf(stderr,
+                "reader-service-open: local-position by bookId bookId=%s savedSource=%s savedTarget=%s page=%d offset=%d font=%d\n",
+                doc.book_id ? doc.book_id : "(null)",
+                saved_source_target, saved_target, saved_page, saved_offset,
+                saved_content_font_size);
     }
 
     if (!has_cloud_position && has_local_position &&
@@ -216,9 +272,27 @@ int reader_service_prepare_open_document(ApiContext *ctx, const char *source_tar
     result->initial_page = initial_page;
     result->initial_offset = saved_offset;
     result->honor_saved_position = honor_saved_position;
+    fprintf(stderr,
+            "reader-service-open: ready source=%s finalSource=%s finalDocTarget=%s bookId=%s initialPage=%d initialOffset=%d honorSaved=%d contentFont=%d cloud=%d local=%d\n",
+            source_target,
+            result->source_target,
+            result->doc.target ? result->doc.target : "(null)",
+            result->doc.book_id ? result->doc.book_id : "(null)",
+            result->initial_page,
+            result->initial_offset,
+            result->honor_saved_position,
+            result->content_font_size,
+            has_cloud_position,
+            has_local_position);
     rc = 0;
 
 cleanup:
+    if (rc != 0) {
+        fprintf(stderr,
+                "reader-service-open: failed source=%s bookIdHint=%s\n",
+                source_target,
+                book_id_hint && *book_id_hint ? book_id_hint : "(null)");
+    }
     reader_document_free(&doc);
     reader_document_free(&saved_doc);
     return rc;
@@ -226,6 +300,7 @@ cleanup:
 
 int reader_service_copy_report_document(ReaderDocument *dst, const ReaderDocument *src) {
     memset(dst, 0, sizeof(*dst));
+    dst->kind = src->kind;
     dst->book_id = reader_service_dup_or_null(src->book_id);
     dst->token = reader_service_dup_or_null(src->token);
     dst->chapter_uid = reader_service_dup_or_null(src->chapter_uid);
@@ -264,7 +339,8 @@ int reader_service_copy_report_document(ReaderDocument *dst, const ReaderDocumen
 void reader_service_save_local_position(ApiContext *ctx, const ReaderDocument *doc,
                                         const char *source_target, int content_font_size,
                                         int current_page, int current_offset) {
-    if (!ctx || !doc || !doc->book_id || !doc->target || !source_target || !source_target[0]) {
+    if (!ctx || !reader_service_document_supports_local_position(doc) ||
+        !doc->target || !source_target || !source_target[0]) {
         return;
     }
 
@@ -278,6 +354,13 @@ int reader_service_report_progress(ApiContext *ctx, const ReaderDocument *doc, i
                                    int total_pages, int chapter_offset,
                                    int reading_seconds, const char *page_summary,
                                    int compute_progress) {
+    if (!ctx || !doc) {
+        return READER_REPORT_ERROR;
+    }
+    if (doc->kind != READER_DOCUMENT_KIND_BOOK ||
+        !doc->book_id || !doc->token || !doc->chapter_uid) {
+        return READER_REPORT_OK;
+    }
     return reader_report_progress_at_offset(ctx, doc, current_page, total_pages,
                                             reading_seconds, page_summary,
                                             compute_progress, chapter_offset);

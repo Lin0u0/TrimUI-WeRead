@@ -811,140 +811,69 @@ int reader_fetch_catalog_chunk(ApiContext *ctx, const char *book_id, int type,
 }
 
 int reader_hydrate_full_catalog(ApiContext *ctx, ReaderDocument *doc) {
-    ReaderCatalogItem *items = NULL;
-    int count = 0;
-    int cap = 0;
-    ReaderCatalogItem *chunk_prev = NULL;
-    ReaderCatalogItem *chunk_cur = NULL;
-    ReaderCatalogItem *chunk = NULL;
-    int chunk_count = 0;
-    int chunk_first = 0;
-    int chunk_last = 0;
-    int prev_first = 0;
-    int prev_last = 0;
-    int forward_first = 0;
-    int forward_last = 0;
-    int max_requests = 64;
+    int max_passes = 64;
+    int pass = 0;
 
     if (!ctx || !doc || !doc->book_id || !doc->catalog_total_count ||
-        doc->catalog_range_end <= doc->catalog_range_start) {
+        !doc->catalog_items || doc->catalog_count <= 0) {
         return -1;
     }
 
-    for (int i = 0; i < doc->catalog_count; i++) {
-        ReaderCatalogItem copy = {0};
-        copy.chapter_uid = reader_dup_or_null(doc->catalog_items[i].chapter_uid);
-        copy.target = reader_dup_or_null(doc->catalog_items[i].target);
-        copy.title = reader_dup_or_null(doc->catalog_items[i].title);
-        copy.chapter_idx = doc->catalog_items[i].chapter_idx;
-        copy.word_count = doc->catalog_items[i].word_count;
-        copy.level = doc->catalog_items[i].level;
-        copy.is_current = doc->catalog_items[i].is_current;
-        copy.is_lock = doc->catalog_items[i].is_lock;
-        if ((!doc->catalog_items[i].chapter_uid || !copy.chapter_uid) ||
-            (!doc->catalog_items[i].target || !copy.target) ||
-            (!doc->catalog_items[i].title || !copy.title) ||
-            reader_catalog_merge_item(&items, &count, &cap, &copy) != 0) {
-            free(copy.chapter_uid);
-            free(copy.target);
-            free(copy.title);
-            reader_catalog_items_free(items, count);
+    qsort(doc->catalog_items, (size_t)doc->catalog_count, sizeof(*doc->catalog_items),
+          catalog_item_cmp_chapter_idx);
+    fprintf(stderr,
+            "reader-catalog-hydrate: begin bookId=%s count=%d total=%d first=%d last=%d\n",
+            doc->book_id,
+            doc->catalog_count,
+            doc->catalog_total_count,
+            doc->catalog_items[0].chapter_idx,
+            doc->catalog_items[doc->catalog_count - 1].chapter_idx);
+
+    while (pass++ < max_passes) {
+        int added_total = 0;
+        int first_idx;
+        int last_idx;
+
+        if (!doc->catalog_items || doc->catalog_count <= 0) {
             return -1;
         }
-    }
-
-    if (reader_fetch_catalog_chunk(ctx, doc->book_id, 1,
-                                   doc->catalog_range_start, doc->catalog_range_end,
-                                   doc->chapter_uid, &chunk_prev, &chunk_count,
-                                   &prev_first, &prev_last) == 0 && chunk_count > 0) {
-        for (int i = 0; i < chunk_count; i++) {
-            if (reader_catalog_merge_item(&items, &count, &cap, &chunk_prev[i]) != 0) {
-                reader_catalog_items_free(chunk_prev, chunk_count);
-                reader_catalog_items_free(items, count);
-                return -1;
-            }
-            free(chunk_prev[i].chapter_uid);
-            free(chunk_prev[i].target);
-            free(chunk_prev[i].title);
-        }
-        free(chunk_prev);
-        chunk_prev = NULL;
-
-        if (reader_fetch_catalog_chunk(ctx, doc->book_id, 2, prev_first, prev_last,
-                                       doc->chapter_uid, &chunk_cur, &chunk_count,
-                                       &forward_first, &forward_last) == 0 && chunk_count > 0) {
-            for (int i = 0; i < chunk_count; i++) {
-                if (reader_catalog_merge_item(&items, &count, &cap, &chunk_cur[i]) != 0) {
-                    reader_catalog_items_free(chunk_cur, chunk_count);
-                    reader_catalog_items_free(items, count);
-                    return -1;
-                }
-                free(chunk_cur[i].chapter_uid);
-                free(chunk_cur[i].target);
-                free(chunk_cur[i].title);
-            }
-            free(chunk_cur);
-            chunk_cur = NULL;
-        } else {
-            forward_first = prev_first;
-            forward_last = prev_last;
-        }
-    } else {
-        prev_first = count > 0 ? items[0].chapter_idx : 0;
-        prev_last = prev_first;
-        forward_first = prev_first;
-        forward_last = count > 0 ? items[count - 1].chapter_idx : 0;
-    }
-
-    while (max_requests-- > 0 && prev_first > 1) {
-        if (reader_fetch_catalog_chunk(ctx, doc->book_id, 1, prev_first, prev_last,
-                                       doc->chapter_uid, &chunk, &chunk_count,
-                                       &chunk_first, &chunk_last) != 0 || chunk_count <= 0) {
+        first_idx = doc->catalog_items[0].chapter_idx;
+        last_idx = doc->catalog_items[doc->catalog_count - 1].chapter_idx;
+        if (first_idx <= 1 && last_idx >= doc->catalog_total_count) {
             break;
         }
-        for (int i = 0; i < chunk_count; i++) {
-            if (reader_catalog_merge_item(&items, &count, &cap, &chunk[i]) != 0) {
-                reader_catalog_items_free(chunk, chunk_count);
-                reader_catalog_items_free(items, count);
+        if (first_idx > 1) {
+            int added = 0;
+
+            if (reader_expand_catalog(ctx, doc, -1, &added) != 0) {
                 return -1;
             }
-            free(chunk[i].chapter_uid);
-            free(chunk[i].target);
-            free(chunk[i].title);
+            added_total += added;
         }
-        free(chunk);
-        chunk = NULL;
-        prev_first = chunk_first;
-        prev_last = chunk_last;
-    }
+        if (doc->catalog_items && doc->catalog_count > 0 &&
+            doc->catalog_items[doc->catalog_count - 1].chapter_idx < doc->catalog_total_count) {
+            int added = 0;
 
-    max_requests = 64;
-    while (max_requests-- > 0 && forward_last < doc->catalog_total_count) {
-        if (reader_fetch_catalog_chunk(ctx, doc->book_id, 2, forward_first, forward_last,
-                                       doc->chapter_uid, &chunk, &chunk_count,
-                                       &chunk_first, &chunk_last) != 0 || chunk_count <= 0) {
+            if (reader_expand_catalog(ctx, doc, 1, &added) != 0) {
+                return -1;
+            }
+            added_total += added;
+        }
+        if (!doc->catalog_items || doc->catalog_count <= 0) {
+            return -1;
+        }
+        fprintf(stderr,
+                "reader-catalog-hydrate: pass=%d count=%d total=%d first=%d last=%d added=%d\n",
+                pass,
+                doc->catalog_count,
+                doc->catalog_total_count,
+                doc->catalog_items[0].chapter_idx,
+                doc->catalog_items[doc->catalog_count - 1].chapter_idx,
+                added_total);
+        if (added_total <= 0) {
             break;
         }
-        for (int i = 0; i < chunk_count; i++) {
-            if (reader_catalog_merge_item(&items, &count, &cap, &chunk[i]) != 0) {
-                reader_catalog_items_free(chunk, chunk_count);
-                reader_catalog_items_free(items, count);
-                return -1;
-            }
-            free(chunk[i].chapter_uid);
-            free(chunk[i].target);
-            free(chunk[i].title);
-        }
-        free(chunk);
-        chunk = NULL;
-        forward_first = chunk_first;
-        forward_last = chunk_last;
     }
-
-    qsort(items, (size_t)count, sizeof(*items), catalog_item_cmp_chapter_idx);
-    reader_catalog_items_free(doc->catalog_items, doc->catalog_count);
-    doc->catalog_items = items;
-    doc->catalog_count = count;
     return 0;
 }
 

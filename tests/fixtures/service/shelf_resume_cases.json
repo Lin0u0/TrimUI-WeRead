@@ -101,6 +101,267 @@
       },
       "expectedOk": 0,
       "expectedShelfStatus": "无法打开所选书籍"
+    },
+    {
+      "name": "selected-open-skips-leading-article",
+      "selected": 0,
+      "shelfNuxt": {
+        "state": {
+          "shelf": {
+            "books": [
+              {
+                "bookId": "MP_ARTICLE_1",
+                "title": "Fixture Article"
+              },
+              {
+                "bookId": "book-1",
+                "title": "Fixture Book"
+              }
+            ],
+            "bookReaderUrls": [
+              {
+                "bId": "MP_ARTICLE_1"
+              },
+              {
+                "bId": "book-1",
+                "param": "https://weread.qq.com/web/reader/book-1-chapter-1"
+              }
+            ]
+          }
+        }
+      },
+      "expectedOk": 1,
+      "expectedTarget": "https://weread.qq.com/web/reader/book-1-chapter-1",
+      "expectedBookId": "book-1",
+      "expectedLoadingTitle": "正在打开",
+      "expectedStatus": "正在加载章节..."
+    },
+    {
+      "name": "selected-open-matches-book-id-when-reader-urls-are-reordered",
+      "selected": 1,
+      "shelfNuxt": {
+        "state": {
+          "shelf": {
+            "books": [
+              {
+                "bookId": "book-1",
+                "title": "Fixture Book"
+              },
+              {
+                "bookId": "MP_ARTICLE_1",
+                "title": "Fixture Article"
+              },
+              {
+                "bookId": "book-2",
+                "title": "Second Fixture Book"
+              }
+            ],
+            "bookReaderUrls": [
+              {
+                "bId": "book-2",
+                "param": "https://weread.qq.com/web/reader/book-2-chapter-9"
+              },
+              {
+                "bId": "MP_ARTICLE_1"
+              },
+              {
+                "bId": "book-1",
+                "param": "https://weread.qq.com/web/reader/book-1-chapter-1"
+              }
+            ]
+          }
+        }
+      },
+      "expectedOk": 1,
+      "expectedTarget": "https://weread.qq.com/web/reader/book-2-chapter-9",
+      "expectedBookId": "book-2",
+      "expectedLoadingTitle": "正在打开",
+      "expectedStatus": "正在加载章节..."
+    }
+  ],
+  "articleOpenCases": [
+    {
+      "name": "article-open-prefers-raw-reader-target",
+      "fontSize": 3,
+      "entryId": "MP_ARTICLE_READER",
+      "shelfNuxt": {
+        "state": {
+          "shelf": {
+            "books": [
+              {
+                "bookId": "MP_ARTICLE_READER",
+                "title": "Reader Article"
+              }
+            ],
+            "bookReaderUrls": [
+              {
+                "bId": "MP_ARTICLE_READER",
+                "param": "1564272224d505f5758535f33393331323731353233102"
+              }
+            ]
+          }
+        }
+      },
+      "expectedOk": 1,
+      "expectedTarget": "1564272224d505f5758535f33393331323731353233102",
+      "expectedLoadingTitle": "正在打开",
+      "expectedStatus": "正在加载文章..."
+    },
+    {
+      "name": "article-open-success",
+      "fontSize": 3,
+      "entryId": "MP_ARTICLE_1",
+      "resolvedReviewId": "review-123",
+      "shelfNuxt": {
+        "state": {
+          "shelf": {
+            "books": [
+              {
+                "bookId": "MP_ARTICLE_1",
+                "title": "Fixture Article"
+              },
+              {
+                "bookId": "book-1",
+                "title": "Fixture Book"
+              }
+            ],
+            "bookReaderUrls": [
+              {
+                "bId": "MP_ARTICLE_1"
+              },
+              {
+                "bId": "book-1",
+                "param": "https://weread.qq.com/web/reader/book-1-chapter-1"
+              }
+            ]
+          }
+        }
+      },
+      "expectedOk": 1,
+      "expectedTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-123&fs=3",
+      "expectedLoadingTitle": "正在打开",
+      "expectedStatus": "正在加载文章..."
+    },
+    {
+      "name": "article-open-prefers-direct-target",
+      "fontSize": 3,
+      "entryId": "MP_ARTICLE_DIRECT",
+      "shelfNuxt": {
+        "state": {
+          "shelf": {
+            "books": [
+              {
+                "bookId": "MP_ARTICLE_DIRECT",
+                "title": "Direct Article"
+              }
+            ],
+            "bookReaderUrls": [
+              {
+                "bId": "MP_ARTICLE_DIRECT",
+                "param": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-direct&fs=3"
+              }
+            ]
+          }
+        }
+      },
+      "expectedOk": 1,
+      "expectedTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-direct&fs=3",
+      "expectedLoadingTitle": "正在打开",
+      "expectedStatus": "正在加载文章..."
+    },
+    {
+      "name": "article-open-uses-inline-review-id",
+      "fontSize": 4,
+      "entryId": "MP_ARTICLE_INLINE",
+      "shelfNuxt": {
+        "state": {
+          "shelf": {
+            "books": [
+              {
+                "bookId": "MP_ARTICLE_INLINE",
+                "title": "Inline Article",
+                "reviewId": "review-inline"
+              }
+            ],
+            "bookReaderUrls": [
+              {
+                "bId": "MP_ARTICLE_INLINE"
+              }
+            ]
+          }
+        }
+      },
+      "expectedOk": 1,
+      "expectedTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-inline&fs=4",
+      "expectedLoadingTitle": "正在打开",
+      "expectedStatus": "正在加载文章..."
+    },
+    {
+      "name": "article-open-missing-review-id",
+      "fontSize": 4,
+      "entryId": "MP_ARTICLE_2",
+      "shelfNuxt": {
+        "state": {
+          "shelf": {
+            "books": [
+              {
+                "bookId": "MP_ARTICLE_2",
+                "title": "Broken Article"
+              },
+              {
+                "bookId": "book-1",
+                "title": "Fixture Book"
+              }
+            ],
+            "bookReaderUrls": [
+              {
+                "bId": "MP_ARTICLE_2"
+              },
+              {
+                "bId": "book-1",
+                "param": "https://weread.qq.com/web/reader/book-1-chapter-1"
+              }
+            ]
+          }
+        }
+      },
+      "expectedOk": 0,
+      "expectedShelfStatus": "无法解析文章入口"
+    },
+    {
+      "name": "article-open-matches-entry-id-when-reader-urls-are-reordered",
+      "fontSize": 3,
+      "entryId": "MP_ARTICLE_REORDERED",
+      "shelfNuxt": {
+        "state": {
+          "shelf": {
+            "books": [
+              {
+                "bookId": "MP_ARTICLE_REORDERED",
+                "title": "Reordered Article"
+              },
+              {
+                "bookId": "book-1",
+                "title": "Fixture Book"
+              }
+            ],
+            "bookReaderUrls": [
+              {
+                "bId": "book-1",
+                "param": "https://weread.qq.com/web/reader/book-1-chapter-1"
+              },
+              {
+                "bId": "MP_ARTICLE_REORDERED",
+                "param": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-reordered&fs=3"
+              }
+            ]
+          }
+        }
+      },
+      "expectedOk": 1,
+      "expectedTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-reordered&fs=3",
+      "expectedLoadingTitle": "正在打开",
+      "expectedStatus": "正在加载文章..."
     }
   ]
 }

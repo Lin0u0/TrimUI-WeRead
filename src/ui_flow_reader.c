@@ -6,6 +6,7 @@
 #if HAVE_SDL
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "reader_service.h"
 
@@ -34,6 +35,8 @@ static int ui_reader_flow_open_thread(void *userdata) {
         return -1;
     }
     if (api_init(&ctx, state->data_dir) != 0) {
+        fprintf(stderr, "reader-open-thread: api_init failed source=%s\n",
+                state->source_target);
         state->failed = 1;
         state->running = 0;
         return -1;
@@ -55,7 +58,21 @@ static int ui_reader_flow_open_thread(void *userdata) {
         state->initial_offset = result.initial_offset;
         state->honor_saved_position = result.honor_saved_position;
         state->ready = 1;
+        fprintf(stderr,
+                "reader-open-thread: ready source=%s finalSource=%s docTarget=%s kind=%s bookId=%s initialPage=%d initialOffset=%d honorSaved=%d\n",
+                state->source_target,
+                result.source_target,
+                state->doc.target ? state->doc.target : "(null)",
+                state->doc.kind == READER_DOCUMENT_KIND_ARTICLE ? "article" : "book",
+                state->doc.book_id ? state->doc.book_id : "(null)",
+                state->initial_page,
+                state->initial_offset,
+                state->honor_saved_position);
     } else {
+        fprintf(stderr,
+                "reader-open-thread: failed source=%s bookId=%s\n",
+                state->source_target,
+                state->book_id[0] ? state->book_id : "(null)");
         state->failed = 1;
     }
 
@@ -80,6 +97,37 @@ static int ui_reader_flow_prefetch_thread(void *userdata) {
     snprintf(ctx.ca_file, sizeof(ctx.ca_file), "%s", state->ca_file);
 
     if (reader_prefetch(&ctx, state->target, state->font_size, &state->doc) == 0) {
+        state->ready = 1;
+    } else {
+        state->failed = 1;
+    }
+
+    api_cleanup(&ctx);
+    state->running = 0;
+    return state->ready ? 0 : -1;
+}
+
+static int ui_reader_flow_catalog_hydration_thread(void *userdata) {
+    CatalogHydrationState *state = (CatalogHydrationState *)userdata;
+    ApiContext ctx;
+    int type;
+
+    if (!state) {
+        return -1;
+    }
+    if (api_init(&ctx, state->data_dir) != 0) {
+        state->failed = 1;
+        state->running = 0;
+        return -1;
+    }
+    snprintf(ctx.ca_file, sizeof(ctx.ca_file), "%s", state->ca_file);
+
+    type = state->direction < 0 ? 1 : 2;
+    if (reader_fetch_catalog_chunk(&ctx, state->book_id, type,
+                                   state->range_start, state->range_end,
+                                   state->chapter_uid[0] ? state->chapter_uid : NULL,
+                                   &state->items, &state->item_count,
+                                   NULL, NULL) == 0) {
         state->ready = 1;
     } else {
         state->failed = 1;
@@ -324,6 +372,18 @@ void ui_reader_flow_reader_open_state_reset(ReaderOpenState *state) {
     memset(state, 0, sizeof(*state));
 }
 
+void ui_reader_flow_catalog_hydration_state_reset(CatalogHydrationState *state) {
+    int last_direction = 0;
+
+    if (!state) {
+        return;
+    }
+    last_direction = state->last_requested_direction;
+    reader_catalog_items_free(state->items, state->item_count);
+    memset(state, 0, sizeof(*state));
+    state->last_requested_direction = last_direction;
+}
+
 void ui_reader_flow_chapter_prefetch_cache_reset(ChapterPrefetchCache *cache) {
     if (!cache) {
         return;
@@ -344,6 +404,14 @@ int ui_reader_flow_chapter_prefetch_has_running_work(const ChapterPrefetchCache 
         }
     }
     return 0;
+}
+
+int ui_reader_flow_catalog_hydration_has_running_work(const CatalogHydrationState *state,
+                                                     SDL_Thread *thread_handle) {
+    if (!state) {
+        return thread_handle != NULL;
+    }
+    return thread_handle != NULL || state->running;
 }
 
 int ui_reader_flow_chapter_prefetch_cache_adopt(ChapterPrefetchCache *cache,
@@ -368,20 +436,131 @@ int ui_reader_flow_chapter_prefetch_cache_adopt(ChapterPrefetchCache *cache,
     return -1;
 }
 
-void ui_reader_flow_tick_reader(ApiContext *ctx, ReaderViewState *reader_state,
-                                ProgressReportState *progress_report,
-                                SDL_Thread **progress_report_thread_handle,
-                                ChapterPrefetchCache *chapter_prefetch_cache) {
+static int ui_reader_flow_catalog_hydration_poll(ReaderViewState *reader_state,
+                                                 CatalogHydrationState *state,
+                                                 SDL_Thread **thread_handle) {
+    int added_count = 0;
+    int render_requested = 0;
+
+    if (!state || !thread_handle || !*thread_handle || state->running) {
+        return 0;
+    }
+
+    SDL_WaitThread(*thread_handle, NULL);
+    *thread_handle = NULL;
+    if (!state->failed && state->ready && reader_state &&
+        reader_state->doc.kind == READER_DOCUMENT_KIND_BOOK &&
+        reader_state->doc.book_id && state->book_id[0] &&
+        strcmp(reader_state->doc.book_id, state->book_id) == 0 &&
+        state->items && state->item_count > 0 &&
+        reader_merge_catalog_chunk(&reader_state->doc, state->items,
+                                   state->item_count, &added_count) == 0) {
+        int index = ui_reader_view_current_catalog_index(reader_state);
+        reader_state->catalog_selected = index >= 0 ? index : 0;
+        render_requested = reader_state->catalog_open && added_count > 0;
+        fprintf(stderr,
+                "reader-catalog-bg: merged bookId=%s direction=%d added=%d count=%d total=%d\n",
+                reader_state->doc.book_id,
+                state->direction,
+                added_count,
+                reader_state->doc.catalog_count,
+                reader_state->doc.catalog_total_count);
+    }
+    ui_reader_flow_catalog_hydration_state_reset(state);
+    return render_requested;
+}
+
+static void ui_reader_flow_catalog_hydration_maybe_start(ApiContext *ctx,
+                                                         ReaderViewState *reader_state,
+                                                         CatalogHydrationState *state,
+                                                         SDL_Thread **thread_handle) {
+    int first_idx;
+    int last_idx;
+    int missing_before;
+    int missing_after;
+    int direction;
+
+    if (!ctx || !reader_state || !state || !thread_handle || *thread_handle ||
+        state->running || !reader_state->catalog_open ||
+        reader_state->doc.kind != READER_DOCUMENT_KIND_BOOK ||
+        !reader_state->doc.book_id || !reader_state->doc.catalog_items ||
+        reader_state->doc.catalog_count <= 0 || reader_state->doc.catalog_total_count <= 0 ||
+        reader_state->doc.catalog_count >= reader_state->doc.catalog_total_count) {
+        return;
+    }
+
+    first_idx = reader_state->doc.catalog_items[0].chapter_idx;
+    last_idx = reader_state->doc.catalog_items[reader_state->doc.catalog_count - 1].chapter_idx;
+    missing_before = first_idx > 1 ? first_idx - 1 : 0;
+    missing_after = last_idx < reader_state->doc.catalog_total_count ?
+        (reader_state->doc.catalog_total_count - last_idx) : 0;
+    if (missing_before <= 0 && missing_after <= 0) {
+        return;
+    }
+
+    if (missing_before > 0 && missing_after > 0) {
+        direction = missing_before >= missing_after ? -1 : 1;
+        if (state->last_requested_direction == direction) {
+            direction = -direction;
+        }
+    } else {
+        direction = missing_before > 0 ? -1 : 1;
+    }
+
+    ui_reader_flow_catalog_hydration_state_reset(state);
+    snprintf(state->data_dir, sizeof(state->data_dir), "%s", ctx->data_dir);
+    snprintf(state->ca_file, sizeof(state->ca_file), "%s", ctx->ca_file);
+    snprintf(state->book_id, sizeof(state->book_id), "%s", reader_state->doc.book_id);
+    if (reader_state->doc.chapter_uid && reader_state->doc.chapter_uid[0]) {
+        snprintf(state->chapter_uid, sizeof(state->chapter_uid), "%s",
+                 reader_state->doc.chapter_uid);
+    }
+    state->direction = direction;
+    state->range_start = first_idx;
+    state->range_end = last_idx;
+    state->last_requested_direction = direction;
+    state->running = 1;
+    *thread_handle = SDL_CreateThread(ui_reader_flow_catalog_hydration_thread,
+                                      "weread-catalog-hydrate", state);
+    if (!*thread_handle) {
+        state->running = 0;
+        state->failed = 1;
+        fprintf(stderr,
+                "reader-catalog-bg: SDL_CreateThread failed bookId=%s direction=%d range=%d-%d\n",
+                state->book_id,
+                state->direction,
+                state->range_start,
+                state->range_end);
+        return;
+    }
+
+    fprintf(stderr,
+            "reader-catalog-bg: begin bookId=%s direction=%d range=%d-%d count=%d total=%d\n",
+            state->book_id,
+            state->direction,
+            state->range_start,
+            state->range_end,
+            reader_state->doc.catalog_count,
+            reader_state->doc.catalog_total_count);
+}
+
+int ui_reader_flow_tick_reader(ApiContext *ctx, ReaderViewState *reader_state,
+                               ProgressReportState *progress_report,
+                               SDL_Thread **progress_report_thread_handle,
+                               ChapterPrefetchCache *chapter_prefetch_cache,
+                               CatalogHydrationState *catalog_hydration,
+                               SDL_Thread **catalog_hydration_thread_handle) {
     Uint32 now;
     Uint32 elapsed_ms;
     int elapsed_seconds;
     char targets[UI_CHAPTER_PREFETCH_RADIUS * 2][2048];
     int target_count = 0;
     int current_index;
+    int render_requested = 0;
 
     if (!ctx || !reader_state || !progress_report || !progress_report_thread_handle ||
-        !chapter_prefetch_cache) {
-        return;
+        !chapter_prefetch_cache || !catalog_hydration || !catalog_hydration_thread_handle) {
+        return 0;
     }
 
     if (reader_state->doc.book_id && reader_state->doc.token && reader_state->doc.chapter_uid) {
@@ -429,10 +608,15 @@ void ui_reader_flow_tick_reader(ApiContext *ctx, ReaderViewState *reader_state,
         ui_reader_flow_prefetch_poll(&chapter_prefetch_cache->slots[i].state,
                                      &chapter_prefetch_cache->slots[i].thread);
     }
+    render_requested |=
+        ui_reader_flow_catalog_hydration_poll(reader_state, catalog_hydration,
+                                              catalog_hydration_thread_handle);
+    ui_reader_flow_catalog_hydration_maybe_start(ctx, reader_state, catalog_hydration,
+                                                 catalog_hydration_thread_handle);
 
     current_index = ui_reader_view_current_catalog_index(reader_state);
     if (current_index >= 0 && current_index == chapter_prefetch_cache->last_update_index) {
-        return;
+        return render_requested;
     }
     chapter_prefetch_cache->last_update_index = current_index;
     if (reader_state->doc.catalog_items && reader_state->doc.catalog_count > 0 &&
@@ -481,17 +665,22 @@ void ui_reader_flow_tick_reader(ApiContext *ctx, ReaderViewState *reader_state,
         ui_reader_flow_prefetch_request(ctx, chapter_prefetch_cache, targets[i],
                                         reader_state->doc.font_size);
     }
+    return render_requested;
 }
 
-void ui_reader_flow_poll_background(ChapterPrefetchCache *chapter_prefetch_cache) {
-    if (!chapter_prefetch_cache) {
-        return;
+void ui_reader_flow_poll_background(ChapterPrefetchCache *chapter_prefetch_cache,
+                                    CatalogHydrationState *catalog_hydration,
+                                    SDL_Thread **catalog_hydration_thread_handle,
+                                    ReaderViewState *reader_state) {
+    if (chapter_prefetch_cache) {
+        for (int i = 0; i < (int)(sizeof(chapter_prefetch_cache->slots) /
+                                  sizeof(chapter_prefetch_cache->slots[0])); i++) {
+            ui_reader_flow_prefetch_poll(&chapter_prefetch_cache->slots[i].state,
+                                         &chapter_prefetch_cache->slots[i].thread);
+        }
     }
-    for (int i = 0; i < (int)(sizeof(chapter_prefetch_cache->slots) /
-                              sizeof(chapter_prefetch_cache->slots[0])); i++) {
-        ui_reader_flow_prefetch_poll(&chapter_prefetch_cache->slots[i].state,
-                                     &chapter_prefetch_cache->slots[i].thread);
-    }
+    (void)ui_reader_flow_catalog_hydration_poll(reader_state, catalog_hydration,
+                                                catalog_hydration_thread_handle);
 }
 
 void ui_reader_flow_begin_reader_open(ApiContext *ctx, ReaderOpenState *reader_open,
@@ -512,12 +701,20 @@ void ui_reader_flow_begin_reader_open(ApiContext *ctx, ReaderOpenState *reader_o
     }
     reader_open->font_size = font_size;
     reader_open->content_font_size = UI_READER_CONTENT_FONT_SIZE;
+    fprintf(stderr,
+            "reader-open-begin: source=%s bookId=%s font=%d\n",
+            reader_open->source_target,
+            reader_open->book_id[0] ? reader_open->book_id : "(null)",
+            reader_open->font_size);
     reader_open->running = 1;
     *reader_open_thread_handle =
         SDL_CreateThread(ui_reader_flow_open_thread, "weread-reader-open", reader_open);
     if (!*reader_open_thread_handle) {
         reader_open->running = 0;
         reader_open->failed = 1;
+        fprintf(stderr,
+                "reader-open-begin: SDL_CreateThread failed source=%s\n",
+                reader_open->source_target);
     }
 }
 
@@ -541,6 +738,17 @@ int ui_reader_flow_finish_open(ApiContext *ctx, TTF_Font *body_font,
     if (reader_open->poor_network) {
         *poor_network_toast_until = SDL_GetTicks() + 3000;
     }
+    fprintf(stderr,
+            "reader-open-finish: begin source=%s ready=%d failed=%d kind=%s docTarget=%s initialPage=%d initialOffset=%d honorSaved=%d contentFont=%d\n",
+            reader_open->source_target,
+            reader_open->ready,
+            reader_open->failed,
+            reader_open->doc.kind == READER_DOCUMENT_KIND_ARTICLE ? "article" : "book",
+            reader_open->doc.target ? reader_open->doc.target : "(null)",
+            reader_open->initial_page,
+            reader_open->initial_offset,
+            reader_open->honor_saved_position,
+            reader_open->content_font_size);
     reader_state->content_font_size = reader_open->content_font_size;
     if (reader_open->ready &&
         ui_reader_view_adopt_document(body_font, &reader_open->doc,
@@ -563,7 +771,19 @@ int ui_reader_flow_finish_open(ApiContext *ctx, TTF_Font *body_font,
         shelf_status[0] = '\0';
         status[0] = '\0';
         *view = VIEW_READER;
+        fprintf(stderr,
+                "reader-open-finish: adopted source=%s docTarget=%s view=reader currentPage=%d totalLines=%d\n",
+                reader_open->source_target,
+                reader_state->doc.target ? reader_state->doc.target : "(null)",
+                reader_state->current_page,
+                reader_state->line_count);
     } else if (reader_open->failed || !reader_open->ready) {
+        fprintf(stderr,
+                "reader-open-finish: open failed source=%s shelfAvailable=%d ready=%d failed=%d\n",
+                reader_open->source_target,
+                shelf_available,
+                reader_open->ready,
+                reader_open->failed);
         if (shelf_available) {
             *view = VIEW_SHELF;
             snprintf(shelf_status, shelf_status_size,
@@ -585,6 +805,9 @@ int ui_reader_flow_finish_open(ApiContext *ctx, TTF_Font *body_font,
                      "\xE6\x89\x93\xE5\xBC\x80\xE5\xA4\xB1\xE8\xB4\xA5\xEF\xBC\x8C\xE6\x8C\x89 A \xE9\x87\x8D\xE8\xAF\x95");
         }
     } else {
+        fprintf(stderr,
+                "reader-open-finish: ready but adopt failed source=%s\n",
+                reader_open->source_target);
         ui_reader_flow_reader_open_state_reset(reader_open);
     }
 
@@ -595,7 +818,9 @@ void ui_reader_flow_shutdown(ReaderOpenState *reader_open,
                              SDL_Thread **reader_open_thread_handle,
                              ProgressReportState *progress_report,
                              SDL_Thread **progress_report_thread_handle,
-                             ChapterPrefetchCache *chapter_prefetch_cache) {
+                             ChapterPrefetchCache *chapter_prefetch_cache,
+                             CatalogHydrationState *catalog_hydration,
+                             SDL_Thread **catalog_hydration_thread_handle) {
     if (reader_open_thread_handle && *reader_open_thread_handle) {
         SDL_WaitThread(*reader_open_thread_handle, NULL);
         *reader_open_thread_handle = NULL;
@@ -604,7 +829,12 @@ void ui_reader_flow_shutdown(ReaderOpenState *reader_open,
         SDL_WaitThread(*progress_report_thread_handle, NULL);
         *progress_report_thread_handle = NULL;
     }
+    if (catalog_hydration_thread_handle && *catalog_hydration_thread_handle) {
+        SDL_WaitThread(*catalog_hydration_thread_handle, NULL);
+        *catalog_hydration_thread_handle = NULL;
+    }
     ui_reader_flow_chapter_prefetch_cache_reset(chapter_prefetch_cache);
+    ui_reader_flow_catalog_hydration_state_reset(catalog_hydration);
     ui_reader_flow_progress_report_state_reset(progress_report);
     ui_reader_flow_reader_open_state_reset(reader_open);
 }

@@ -62,7 +62,18 @@ int ui_settings_flow_open_from_reader(SettingsFlowState *state, UiView *view, in
     return ui_settings_flow_open(state, view, UI_SETTINGS_ORIGIN_READER, quick_open, 0);
 }
 
-int ui_settings_flow_close(SettingsFlowState *state, UiView *view, int *shelf_selected) {
+int ui_settings_flow_begin_close(SettingsFlowState *state) {
+    if (!state || !state->open) {
+        return -1;
+    }
+
+    state->open = 0;
+    state->quick_open = 0;
+    state->logout_confirm_armed = 0;
+    return 0;
+}
+
+int ui_settings_flow_finish_close(SettingsFlowState *state, UiView *view, int *shelf_selected) {
     UiView return_view;
     int saved_shelf_selected;
 

@@ -35,19 +35,31 @@ void ui_shelf_flow_cover_download_state_reset(ShelfCoverDownloadState *state) {
 void ui_shelf_flow_cover_download_maybe_start(ApiContext *ctx, ShelfCoverCache *cache,
                                               ShelfCoverDownloadState *state,
                                               SDL_Thread **thread_handle, int selected) {
+    int min_index;
+    int max_index;
+
     if (!ctx || !cache || !cache->entries || cache->count <= 0 || !state || !thread_handle ||
         *thread_handle || state->running) {
         return;
     }
 
-    for (int distance = 0; distance < cache->count; distance++) {
+    min_index = selected - UI_SHELF_COVER_DOWNLOAD_RADIUS;
+    max_index = selected + UI_SHELF_COVER_DOWNLOAD_RADIUS;
+    if (min_index < 0) {
+        min_index = 0;
+    }
+    if (max_index >= cache->count) {
+        max_index = cache->count - 1;
+    }
+
+    for (int distance = 0; distance <= UI_SHELF_COVER_DOWNLOAD_RADIUS; distance++) {
         int candidates[2] = { selected + distance, selected - distance };
 
         for (int pass = 0; pass < (distance == 0 ? 1 : 2); pass++) {
             int index = candidates[pass];
             ShelfCoverEntry *entry;
 
-            if (index < 0 || index >= cache->count) {
+            if (index < min_index || index > max_index) {
                 continue;
             }
             entry = &cache->entries[index];
@@ -134,6 +146,18 @@ int ui_shelf_flow_prepare_selected_open(cJSON *shelf_nuxt, int selected,
                                                loading_title, loading_title_size,
                                                status, status_size,
                                                shelf_status, shelf_status_size);
+}
+
+int ui_shelf_flow_prepare_article_open(ApiContext *ctx, cJSON *shelf_nuxt, int font_size,
+                                       char *target, size_t target_size,
+                                       char *loading_title, size_t loading_title_size,
+                                       char *status, size_t status_size,
+                                       char *shelf_status, size_t shelf_status_size) {
+    return shelf_service_prepare_article_open(ctx, shelf_nuxt, font_size,
+                                              target, target_size,
+                                              loading_title, loading_title_size,
+                                              status, status_size,
+                                              shelf_status, shelf_status_size);
 }
 
 #endif

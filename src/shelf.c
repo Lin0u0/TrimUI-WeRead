@@ -1,8 +1,76 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "shelf.h"
 #include "json.h"
 #include "shelf_state.h"
+
+static cJSON *shelf_reader_item(cJSON *urls, int index) {
+    if (!urls || !cJSON_IsArray(urls)) {
+        return NULL;
+    }
+    return cJSON_GetArrayItem(urls, index);
+}
+
+static const char *shelf_reader_item_entry_id(cJSON *reader_item) {
+    const char *entry_id;
+
+    if (!reader_item || !cJSON_IsObject(reader_item)) {
+        return NULL;
+    }
+
+    entry_id = json_get_string(reader_item, "bId");
+    if (entry_id && *entry_id) {
+        return entry_id;
+    }
+    entry_id = json_get_string(reader_item, "bookId");
+    if (entry_id && *entry_id) {
+        return entry_id;
+    }
+    entry_id = json_get_string(reader_item, "id");
+    if (entry_id && *entry_id) {
+        return entry_id;
+    }
+    return NULL;
+}
+
+static const char *shelf_entry_id(cJSON *book, cJSON *reader_item) {
+    const char *book_id = json_get_string(book, "bookId");
+    const char *reader_book_id = json_get_string(reader_item, "bId");
+
+    if (book_id && *book_id) {
+        return book_id;
+    }
+    if (reader_book_id && *reader_book_id) {
+        return reader_book_id;
+    }
+    return NULL;
+}
+
+static const char *shelf_entry_review_id(cJSON *book, cJSON *reader_item) {
+    const char *review_id = json_get_string(book, "reviewId");
+
+    if (review_id && *review_id) {
+        return review_id;
+    }
+    review_id = json_get_string(reader_item, "reviewId");
+    if (review_id && *review_id) {
+        return review_id;
+    }
+    review_id = json_get_string(book, "id");
+    if (review_id && *review_id) {
+        return review_id;
+    }
+    review_id = json_get_string(reader_item, "id");
+    if (review_id && *review_id) {
+        return review_id;
+    }
+    return NULL;
+}
+
+static int shelf_entry_id_is_article(const char *entry_id) {
+    return entry_id && strncmp(entry_id, "MP", 2) == 0;
+}
 
 static int shelf_extend_from_api(ApiContext *ctx, cJSON *nuxt) {
     cJSON *shelf = json_get_path(nuxt, "state.shelf");
@@ -98,10 +166,149 @@ const char *shelf_reader_target(cJSON *urls, int index) {
     return NULL;
 }
 
+cJSON *shelf_reader_item_for_entry_id(cJSON *urls, const char *entry_id) {
+    int count;
+
+    if (!urls || !cJSON_IsArray(urls) || !entry_id || !*entry_id) {
+        return NULL;
+    }
+
+    count = cJSON_GetArraySize(urls);
+    for (int i = 0; i < count; i++) {
+        cJSON *reader_item = shelf_reader_item(urls, i);
+        const char *reader_entry_id = shelf_reader_item_entry_id(reader_item);
+
+        if (reader_entry_id && strcmp(reader_entry_id, entry_id) == 0) {
+            return reader_item;
+        }
+    }
+
+    return NULL;
+}
+
+const char *shelf_reader_target_for_entry_id(cJSON *urls, const char *entry_id) {
+    cJSON *reader_item = shelf_reader_item_for_entry_id(urls, entry_id);
+
+    if (!reader_item) {
+        return NULL;
+    }
+    if (cJSON_IsString(reader_item)) {
+        return reader_item->valuestring;
+    }
+    if (cJSON_IsObject(reader_item)) {
+        return json_get_string(reader_item, "param");
+    }
+    return NULL;
+}
+
+int shelf_entry_is_article(cJSON *book, cJSON *reader_item) {
+    return shelf_entry_id_is_article(shelf_entry_id(book, reader_item));
+}
+
+int shelf_normal_book_count(cJSON *nuxt) {
+    cJSON *books = shelf_books(nuxt);
+    cJSON *urls = shelf_reader_urls(nuxt);
+    int count = 0;
+    int total;
+
+    if (!books || !cJSON_IsArray(books)) {
+        return 0;
+    }
+
+    total = cJSON_GetArraySize(books);
+    for (int i = 0; i < total; i++) {
+        cJSON *book = cJSON_GetArrayItem(books, i);
+        cJSON *reader_item = shelf_reader_item(urls, i);
+
+        if (!shelf_entry_is_article(book, reader_item)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+cJSON *shelf_normal_book_at(cJSON *nuxt, int normal_index, int *source_index_out) {
+    cJSON *books = shelf_books(nuxt);
+    cJSON *urls = shelf_reader_urls(nuxt);
+    int visible_index = 0;
+    int total;
+
+    if (source_index_out) {
+        *source_index_out = -1;
+    }
+    if (!books || !cJSON_IsArray(books) || normal_index < 0) {
+        return NULL;
+    }
+
+    total = cJSON_GetArraySize(books);
+    for (int i = 0; i < total; i++) {
+        cJSON *book = cJSON_GetArrayItem(books, i);
+        cJSON *reader_item = shelf_reader_item(urls, i);
+
+        if (shelf_entry_is_article(book, reader_item)) {
+            continue;
+        }
+        if (visible_index == normal_index) {
+            if (source_index_out) {
+                *source_index_out = i;
+            }
+            return book;
+        }
+        visible_index++;
+    }
+
+    return NULL;
+}
+
+int shelf_article_slot_info(cJSON *nuxt, ShelfArticleSlotInfo *info) {
+    cJSON *books = shelf_books(nuxt);
+    cJSON *urls = shelf_reader_urls(nuxt);
+    int total;
+
+    if (info) {
+        memset(info, 0, sizeof(*info));
+        info->source_index = -1;
+    }
+    if (!books || !cJSON_IsArray(books)) {
+        return 0;
+    }
+
+    total = cJSON_GetArraySize(books);
+    for (int i = 0; i < total; i++) {
+        cJSON *book = cJSON_GetArrayItem(books, i);
+        cJSON *reader_item = shelf_reader_item(urls, i);
+        const char *entry_id = shelf_entry_id(book, reader_item);
+        cJSON *matched_reader_item = shelf_reader_item_for_entry_id(urls, entry_id);
+
+        if (!shelf_entry_is_article(book, reader_item)) {
+            continue;
+        }
+        if (info) {
+            info->available = 1;
+            info->source_index = i;
+            info->entry_id = entry_id;
+            info->title = json_get_string(book, "title");
+            info->source_target = matched_reader_item ?
+                shelf_reader_target_for_entry_id(urls, entry_id) :
+                shelf_reader_target(urls, i);
+            info->review_id = shelf_entry_review_id(book,
+                                                    matched_reader_item ?
+                                                    matched_reader_item :
+                                                    reader_item);
+        }
+        return 1;
+    }
+
+    return 0;
+}
+
 static int shelf_print_from_nuxt(cJSON *nuxt) {
     cJSON *books = shelf_books(nuxt);
     cJSON *urls = shelf_reader_urls(nuxt);
+    ShelfArticleSlotInfo article_slot;
     int count;
+    int normal_count;
+    int printed_index = 0;
 
     if (!nuxt) {
         return -1;
@@ -120,15 +327,29 @@ static int shelf_print_from_nuxt(cJSON *nuxt) {
     }
 
     count = cJSON_GetArraySize(books);
-    printf("Shelf contains %d books\n", count);
+    normal_count = shelf_normal_book_count(nuxt);
+    printf("Shelf contains %d books\n", normal_count);
+    if (shelf_article_slot_info(nuxt, &article_slot)) {
+        printf("Article slot: %s", article_slot.title ? article_slot.title : "(untitled article)");
+        if (article_slot.entry_id) {
+            printf(" [entryId=%s]", article_slot.entry_id);
+        }
+        printf("\n");
+    }
     for (int i = 0; i < count; i++) {
         cJSON *book = cJSON_GetArrayItem(books, i);
         const char *title = json_get_string(book, "title");
         const char *author = json_get_string(book, "author");
         const char *book_id = json_get_string(book, "bookId");
         const char *reader = shelf_reader_target(urls, i);
+        cJSON *reader_item = shelf_reader_item(urls, i);
 
-        printf("%2d. %s", i + 1, title ? title : "(untitled)");
+        if (shelf_entry_is_article(book, reader_item)) {
+            continue;
+        }
+        printed_index++;
+
+        printf("%2d. %s", printed_index, title ? title : "(untitled)");
         if (author) {
             printf(" - %s", author);
         }
