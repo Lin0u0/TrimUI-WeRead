@@ -62,6 +62,40 @@ static int ui_haptic_write_value(const UiHapticState *state, const char *value) 
     return ui_write_text_file(state->value_path, value);
 }
 
+static int ui_platform_haptic_thread(void *userdata) {
+    UiHapticState *state = (UiHapticState *)userdata;
+
+    if (!state || !state->lock || !state->cond) {
+        return -1;
+    }
+
+    SDL_LockMutex(state->lock);
+    while (!state->worker_stop) {
+        Uint32 now;
+        int wait_ms;
+
+        if (!state->motor_on || state->stop_tick == 0) {
+            SDL_CondWait(state->cond, state->lock);
+            continue;
+        }
+
+        now = SDL_GetTicks();
+        wait_ms = (int)((Sint32)(state->stop_tick - now));
+        if (wait_ms > 0) {
+            SDL_CondWaitTimeout(state->cond, state->lock, wait_ms);
+            continue;
+        }
+
+        state->motor_on = 0;
+        state->stop_tick = 0;
+        SDL_UnlockMutex(state->lock);
+        (void)ui_haptic_write_value(state, "0");
+        SDL_LockMutex(state->lock);
+    }
+    SDL_UnlockMutex(state->lock);
+    return 0;
+}
+
 int ui_platform_init_haptics(int tg5040_input, UiHapticState *state) {
     char gpio_path[64];
 
@@ -93,6 +127,37 @@ int ui_platform_init_haptics(int tg5040_input, UiHapticState *state) {
 
     state->available = 1;
     snprintf(state->value_path, sizeof(state->value_path), "%s", gpio_path);
+    state->lock = SDL_CreateMutex();
+    state->cond = SDL_CreateCond();
+    if (!state->lock || !state->cond) {
+        fprintf(stderr, "Haptics: failed to create synchronization primitives: %s\n",
+                SDL_GetError());
+        if (state->cond) {
+            SDL_DestroyCond(state->cond);
+            state->cond = NULL;
+        }
+        if (state->lock) {
+            SDL_DestroyMutex(state->lock);
+            state->lock = NULL;
+        }
+        (void)ui_haptic_write_value(state, "0");
+        state->available = 0;
+        state->value_path[0] = '\0';
+        return -1;
+    }
+
+    state->thread = SDL_CreateThread(ui_platform_haptic_thread, "weread-haptic", state);
+    if (!state->thread) {
+        fprintf(stderr, "Haptics: failed to create worker thread: %s\n", SDL_GetError());
+        SDL_DestroyCond(state->cond);
+        SDL_DestroyMutex(state->lock);
+        state->cond = NULL;
+        state->lock = NULL;
+        (void)ui_haptic_write_value(state, "0");
+        state->available = 0;
+        state->value_path[0] = '\0';
+        return -1;
+    }
     return 0;
 }
 
@@ -101,55 +166,83 @@ void ui_platform_shutdown_haptics(UiHapticState *state) {
         return;
     }
 
+    if (state->lock) {
+        SDL_LockMutex(state->lock);
+        state->worker_stop = 1;
+        SDL_CondSignal(state->cond);
+        SDL_UnlockMutex(state->lock);
+    }
+    if (state->thread) {
+        SDL_WaitThread(state->thread, NULL);
+        state->thread = NULL;
+    }
     if (state->available) {
         (void)ui_haptic_write_value(state, "0");
+    }
+    if (state->cond) {
+        SDL_DestroyCond(state->cond);
+        state->cond = NULL;
+    }
+    if (state->lock) {
+        SDL_DestroyMutex(state->lock);
+        state->lock = NULL;
     }
 
     state->available = 0;
     state->value_path[0] = '\0';
     state->next_allowed_tick = 0;
     state->stop_tick = 0;
+    state->motor_on = 0;
+    state->worker_stop = 0;
 }
 
 void ui_platform_haptic_poll(UiHapticState *state, Uint32 now) {
-    if (!state || !state->available || state->stop_tick == 0) {
-        return;
-    }
-    if ((Sint32)(now - state->stop_tick) >= 0) {
-        (void)ui_haptic_write_value(state, "0");
-        state->stop_tick = 0;
-    }
+    (void)state;
+    (void)now;
 }
 
 void ui_platform_haptic_pulse(UiHapticState *state, Uint32 duration_ms, Uint32 cooldown_ms) {
     Uint32 now;
+    int start_motor = 0;
 
-    if (!state || !state->available) {
+    if (!state || !state->available || !state->lock || !state->cond) {
         return;
     }
 
     now = SDL_GetTicks();
+    SDL_LockMutex(state->lock);
     if ((Sint32)(now - state->next_allowed_tick) < 0) {
+        SDL_UnlockMutex(state->lock);
         return;
     }
 
-    if (state->stop_tick > 0 && (Sint32)(now - state->stop_tick) < 0) {
+    if (state->motor_on && state->stop_tick > 0 && (Sint32)(now - state->stop_tick) < 0) {
         Uint32 new_stop = now + duration_ms;
         if ((Sint32)(new_stop - state->stop_tick) > 0) {
             state->stop_tick = new_stop;
         }
         state->next_allowed_tick = state->stop_tick + cooldown_ms;
+        SDL_CondSignal(state->cond);
+        SDL_UnlockMutex(state->lock);
         return;
     }
 
-    if (ui_haptic_write_value(state, "1") != 0) {
-        fprintf(stderr, "Haptics: failed to write 1 to %s: %s\n",
-                state->value_path, strerror(errno));
-        return;
-    }
-
+    state->motor_on = 1;
     state->stop_tick = now + duration_ms;
     state->next_allowed_tick = state->stop_tick + cooldown_ms;
+    start_motor = 1;
+    SDL_CondSignal(state->cond);
+    SDL_UnlockMutex(state->lock);
+
+    if (start_motor && ui_haptic_write_value(state, "1") != 0) {
+        fprintf(stderr, "Haptics: failed to write 1 to %s: %s\n",
+                state->value_path, strerror(errno));
+        SDL_LockMutex(state->lock);
+        state->motor_on = 0;
+        state->stop_tick = 0;
+        SDL_UnlockMutex(state->lock);
+        return;
+    }
 }
 
 Uint32 ui_frame_interval_ms(UiView view, const UiMotionState *motion_state,

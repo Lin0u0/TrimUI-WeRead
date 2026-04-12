@@ -233,6 +233,85 @@ int shelf_entry_is_article(cJSON *book, cJSON *reader_item) {
     return shelf_entry_id_is_article(shelf_entry_id(book, reader_item));
 }
 
+int shelf_item_count(cJSON *nuxt) {
+    cJSON *books = shelf_books(nuxt);
+
+    if (!books || !cJSON_IsArray(books)) {
+        return 0;
+    }
+    return cJSON_GetArraySize(books);
+}
+
+cJSON *shelf_item_at(cJSON *nuxt, int index, int *source_index_out) {
+    cJSON *books = shelf_books(nuxt);
+
+    if (source_index_out) {
+        *source_index_out = -1;
+    }
+    if (!books || !cJSON_IsArray(books) || index < 0 || index >= cJSON_GetArraySize(books)) {
+        return NULL;
+    }
+    if (source_index_out) {
+        *source_index_out = index;
+    }
+    return cJSON_GetArrayItem(books, index);
+}
+
+int shelf_article_count(cJSON *nuxt) {
+    cJSON *books = shelf_books(nuxt);
+    cJSON *urls = shelf_reader_urls(nuxt);
+    int count = 0;
+    int total;
+
+    if (!books || !cJSON_IsArray(books)) {
+        return 0;
+    }
+
+    total = cJSON_GetArraySize(books);
+    for (int i = 0; i < total; i++) {
+        cJSON *book = cJSON_GetArrayItem(books, i);
+        cJSON *reader_item = shelf_reader_item(urls, i);
+
+        if (shelf_entry_is_article(book, reader_item)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+cJSON *shelf_article_at(cJSON *nuxt, int article_index, int *source_index_out) {
+    cJSON *books = shelf_books(nuxt);
+    cJSON *urls = shelf_reader_urls(nuxt);
+    int visible_index = 0;
+    int total;
+
+    if (source_index_out) {
+        *source_index_out = -1;
+    }
+    if (!books || !cJSON_IsArray(books) || article_index < 0) {
+        return NULL;
+    }
+
+    total = cJSON_GetArraySize(books);
+    for (int i = 0; i < total; i++) {
+        cJSON *book = cJSON_GetArrayItem(books, i);
+        cJSON *reader_item = shelf_reader_item(urls, i);
+
+        if (!shelf_entry_is_article(book, reader_item)) {
+            continue;
+        }
+        if (visible_index == article_index) {
+            if (source_index_out) {
+                *source_index_out = i;
+            }
+            return book;
+        }
+        visible_index++;
+    }
+
+    return NULL;
+}
+
 int shelf_normal_book_count(cJSON *nuxt) {
     cJSON *books = shelf_books(nuxt);
     cJSON *urls = shelf_reader_urls(nuxt);

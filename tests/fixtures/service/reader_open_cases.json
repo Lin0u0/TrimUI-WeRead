@@ -257,6 +257,20 @@
       ]
     },
     {
+      "name": "article-page-image-keeps-paragraph-indent",
+      "target": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-image&fs=3",
+      "expectedUrl": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-image&fs=3",
+      "fixturePath": "service/mpdetail_article_with_image.html",
+      "fontSize": 3,
+      "expectedResult": 0,
+      "expectedDocKind": "article",
+      "expectedDocTarget": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=review-image&fs=3",
+      "expectedBookTitle": "测试带图片公众号文章",
+      "expectedContentContains": "　第二段图片后的正文。",
+      "unexpectedContentContains": "测试配图",
+      "expectedUseContentFont": false
+    },
+    {
       "name": "article-page-invalid-reviewid",
       "target": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=invalid&fs=3",
       "expectedUrl": "https://weread.qq.com/wrwebsimplenjlogic/mpdetail?reviewId=invalid&fs=3",

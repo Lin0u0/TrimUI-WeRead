@@ -288,6 +288,7 @@ int shelf_service_prepare_selected_open(cJSON *shelf_nuxt, int selected,
     cJSON *books;
     cJSON *book;
     cJSON *urls;
+    cJSON *reader_item = NULL;
     const char *book_target;
     const char *selected_book_id;
     int source_index = -1;
@@ -298,7 +299,11 @@ int shelf_service_prepare_selected_open(cJSON *shelf_nuxt, int selected,
     }
 
     books = shelf_books(shelf_nuxt);
-    book = shelf_normal_book_at(shelf_nuxt, selected, &source_index);
+    if (selected < 0) {
+        book = shelf_article_at(shelf_nuxt, -selected - 1, &source_index);
+    } else {
+        book = shelf_normal_book_at(shelf_nuxt, selected, &source_index);
+    }
     if (!books || !cJSON_IsArray(books) || !book || source_index < 0) {
         snprintf(shelf_status, shelf_status_size,
                  "\xE6\x97\xA0\xE6\xB3\x95\xE6\x89\x93\xE5\xBC\x80\xE6\x89\x80\xE9\x80\x89\xE4\xB9\xA6\xE7\xB1\x8D");
@@ -306,6 +311,22 @@ int shelf_service_prepare_selected_open(cJSON *shelf_nuxt, int selected,
     }
 
     urls = shelf_reader_urls(shelf_nuxt);
+    reader_item = cJSON_IsArray(urls) ? cJSON_GetArrayItem(urls, source_index) : NULL;
+    if (shelf_entry_is_article(book, reader_item)) {
+        const char *article_target = shelf_service_reader_target(urls, source_index);
+
+        if (article_target && article_target[0]) {
+            snprintf(target, target_size, "%s", article_target);
+            book_id[0] = '\0';
+            snprintf(loading_title, loading_title_size,
+                     "\xE6\xAD\xA3\xE5\x9C\xA8\xE6\x89\x93\xE5\xBC\x80");
+            snprintf(status, status_size, "正在加载文章...");
+            shelf_status[0] = '\0';
+            return 1;
+        }
+        snprintf(shelf_status, shelf_status_size, "无法解析文章入口");
+        return 0;
+    }
     selected_book_id = json_get_string(book, "bookId");
     book_target = selected_book_id ?
         shelf_reader_target_for_entry_id(urls, selected_book_id) : NULL;

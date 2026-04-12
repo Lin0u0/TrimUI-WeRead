@@ -109,6 +109,9 @@ static int is_block_tag(const char *tag) {
            tag_match(tag, "/div") ||
            tag_match(tag, "section") ||
            tag_match(tag, "/section") ||
+           tag_match(tag, "figure") ||
+           tag_match(tag, "/figure") ||
+           tag_match(tag, "img") ||
            tag_match(tag, "br") ||
            tag_match(tag, "/li") ||
            tag_match(tag, "li") ||
@@ -118,7 +121,7 @@ static int is_block_tag(const char *tag) {
            tag_match(tag, "h3");
 }
 
-/* 段首缩进：两个全角空格 U+3000 */
+/* 段首缩进：一个全角空格 U+3000 */
 static int append_paragraph_indent(char **out, size_t *len, size_t *cap) {
     /* U+3000 = E3 80 80 in UTF-8 */
     static const char indent[] = "\xE3\x80\x80";

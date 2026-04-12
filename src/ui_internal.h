@@ -192,6 +192,11 @@ typedef struct {
     char value_path[64];
     Uint32 next_allowed_tick;
     Uint32 stop_tick;
+    int motor_on;
+    int worker_stop;
+    SDL_mutex *lock;
+    SDL_cond *cond;
+    SDL_Thread *thread;
 } UiHapticState;
 
 typedef struct {
@@ -272,6 +277,7 @@ typedef struct {
     int current_page;
     int catalog_open;
     int catalog_selected;
+    int catalog_scroll_top;
     int content_font_size;
     TTF_Font *content_font;
     Uint32 progress_start_tick;
@@ -362,6 +368,16 @@ typedef struct {
     UiView return_view;
 } SettingsFlowState;
 
+typedef struct {
+    char nickname[128];
+    char avatar_url[1024];
+    char avatar_path[1024];
+    SDL_Texture *avatar_texture;
+    int avatar_w;
+    int avatar_h;
+    int avatar_attempted;
+} UiUserProfile;
+
 /* ====================== Constants ====================== */
 
 enum {
@@ -387,6 +403,7 @@ enum {
     UI_PROGRESS_REPORT_INTERVAL_MS = 30000,
     UI_PROGRESS_PAUSE_TIMEOUT_MS = 120000,
     UI_CHAPTER_PREFETCH_RADIUS = 5,
+    UI_CHAPTER_PREFETCH_MAX_RUNNING = 1,
     UI_TOAST_DURATION_MS = 3000,
     UI_TOAST_FADE_MS = 280,
     UI_VIEW_FADE_DURATION_MS = 320,
@@ -513,6 +530,7 @@ int ui_input_is_page_prev_held(int tg5040_input, SDL_Joystick **joysticks, int j
 int ui_input_is_page_next_held(int tg5040_input, SDL_Joystick **joysticks, int joystick_count,
                                const UiInputSuppression *suppression);
 UiRepeatAction ui_repeat_action_current(UiView view, const ReaderViewState *reader_state,
+                                        UiInputMask observed_input_mask,
                                         int tg5040_input, SDL_Joystick **joysticks,
                                         int joystick_count,
                                         const UiInputSuppression *suppression);

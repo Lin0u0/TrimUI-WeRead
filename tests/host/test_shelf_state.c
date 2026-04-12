@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "json.h"
+#include "shelf.h"
 #include "shelf_state.h"
 #include "state.h"
 
@@ -53,6 +54,40 @@ static void assert_shelf_round_trip(ApiContext *ctx) {
     free(persisted_text);
 }
 
+static void assert_shelf_article_and_book_counts(void) {
+    cJSON *json = cJSON_Parse(
+        "{"
+        "\"state\":{\"shelf\":{"
+        "\"books\":["
+        "{\"bookId\":\"MP_ARTICLE_1\",\"title\":\"Recent Article\"},"
+        "{\"bookId\":\"MP_ARTICLE_2\",\"title\":\"Older Article\"},"
+        "{\"bookId\":\"book-1\",\"title\":\"Book One\"},"
+        "{\"bookId\":\"book-2\",\"title\":\"Book Two\"}"
+        "],"
+        "\"bookReaderUrls\":["
+        "{\"bId\":\"MP_ARTICLE_1\"},"
+        "{\"bId\":\"MP_ARTICLE_2\"},"
+        "{\"bId\":\"book-1\",\"param\":\"reader-1\"},"
+        "{\"bId\":\"book-2\",\"param\":\"reader-2\"}"
+        "]"
+        "}}"
+        "}"
+    );
+    cJSON *article;
+
+    HOST_TEST_ASSERT(json != NULL);
+    HOST_TEST_ASSERT_INT_EQ(shelf_item_count(json), 4);
+    HOST_TEST_ASSERT_INT_EQ(shelf_article_count(json), 2);
+    HOST_TEST_ASSERT_INT_EQ(shelf_normal_book_count(json), 2);
+    article = shelf_article_at(json, 0, NULL);
+    HOST_TEST_ASSERT(article != NULL);
+    HOST_TEST_ASSERT(strcmp(json_get_string(article, "title"), "Recent Article") == 0);
+    article = shelf_article_at(json, 1, NULL);
+    HOST_TEST_ASSERT(article != NULL);
+    HOST_TEST_ASSERT(strcmp(json_get_string(article, "title"), "Older Article") == 0);
+    cJSON_Delete(json);
+}
+
 int main(void) {
     ApiContext ctx;
     char temp_dir[PATH_MAX];
@@ -61,6 +96,7 @@ int main(void) {
 
     assert_shelf_fixture_load(&ctx);
     assert_shelf_round_trip(&ctx);
+    assert_shelf_article_and_book_counts();
 
     host_test_cleanup_api_context(&ctx, temp_dir);
     return 0;

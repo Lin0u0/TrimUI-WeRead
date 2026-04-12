@@ -623,9 +623,11 @@ int ui_input_is_page_next_held(int tg5040_input, SDL_Joystick **joysticks, int j
 }
 
 UiRepeatAction ui_repeat_action_current(UiView view, const ReaderViewState *reader_state,
+                                        UiInputMask observed_input_mask,
                                         int tg5040_input, SDL_Joystick **joysticks,
                                         int joystick_count,
                                         const UiInputSuppression *suppression) {
+    (void)observed_input_mask;
     if (view == VIEW_SHELF) {
         if (ui_input_is_down_held(tg5040_input, joysticks, joystick_count, suppression) ||
             ui_input_is_right_held(tg5040_input, joysticks, joystick_count, suppression)) {
@@ -647,10 +649,10 @@ UiRepeatAction ui_repeat_action_current(UiView view, const ReaderViewState *read
         if (ui_input_is_down_held(tg5040_input, joysticks, joystick_count, suppression)) {
             return UI_REPEAT_CATALOG_DOWN;
         }
-        if (ui_input_is_page_prev_held(tg5040_input, joysticks, joystick_count, suppression)) {
+        if (ui_input_is_left_held(tg5040_input, joysticks, joystick_count, suppression)) {
             return UI_REPEAT_CATALOG_PAGE_PREV;
         }
-        if (ui_input_is_page_next_held(tg5040_input, joysticks, joystick_count, suppression)) {
+        if (ui_input_is_right_held(tg5040_input, joysticks, joystick_count, suppression)) {
             return UI_REPEAT_CATALOG_PAGE_NEXT;
         }
         return UI_REPEAT_NONE;

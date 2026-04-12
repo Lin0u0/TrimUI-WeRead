@@ -319,6 +319,7 @@ static int ui_reader_flow_target_in_list(const char *target, char targets[][2048
 static void ui_reader_flow_prefetch_request(ApiContext *ctx, ChapterPrefetchCache *cache,
                                             const char *target, int font_size) {
     ChapterPrefetchSlot *free_slot = NULL;
+    int running_count = 0;
 
     if (!ctx || !cache || !target || !target[0]) {
         return;
@@ -331,9 +332,16 @@ static void ui_reader_flow_prefetch_request(ApiContext *ctx, ChapterPrefetchCach
             slot->state.font_size == font_size) {
             return;
         }
+        if (slot->state.running || slot->thread) {
+            running_count++;
+        }
         if (!free_slot && !slot->state.running && !slot->thread && !slot->state.ready) {
             free_slot = slot;
         }
+    }
+
+    if (running_count >= UI_CHAPTER_PREFETCH_MAX_RUNNING) {
+        return;
     }
 
     if (!free_slot) {
@@ -441,9 +449,35 @@ static int ui_reader_flow_catalog_hydration_poll(ReaderViewState *reader_state,
                                                  SDL_Thread **thread_handle) {
     int added_count = 0;
     int render_requested = 0;
+    char selected_chapter_uid[128];
+    char selected_target[2048];
+    int selected_chapter_idx = 0;
+    int preserve_selection = 0;
+    int preserved_index = -1;
 
     if (!state || !thread_handle || !*thread_handle || state->running) {
         return 0;
+    }
+
+    selected_chapter_uid[0] = '\0';
+    selected_target[0] = '\0';
+    if (reader_state && reader_state->catalog_open &&
+        reader_state->doc.catalog_items &&
+        reader_state->catalog_selected >= 0 &&
+        reader_state->catalog_selected < reader_state->doc.catalog_count) {
+        ReaderCatalogItem *selected_item =
+            &reader_state->doc.catalog_items[reader_state->catalog_selected];
+
+        if (selected_item->chapter_uid && selected_item->chapter_uid[0]) {
+            snprintf(selected_chapter_uid, sizeof(selected_chapter_uid), "%s",
+                     selected_item->chapter_uid);
+        }
+        if (selected_item->target && selected_item->target[0]) {
+            snprintf(selected_target, sizeof(selected_target), "%s",
+                     selected_item->target);
+        }
+        selected_chapter_idx = selected_item->chapter_idx;
+        preserve_selection = 1;
     }
 
     SDL_WaitThread(*thread_handle, NULL);
@@ -455,8 +489,32 @@ static int ui_reader_flow_catalog_hydration_poll(ReaderViewState *reader_state,
         state->items && state->item_count > 0 &&
         reader_merge_catalog_chunk(&reader_state->doc, state->items,
                                    state->item_count, &added_count) == 0) {
-        int index = ui_reader_view_current_catalog_index(reader_state);
-        reader_state->catalog_selected = index >= 0 ? index : 0;
+        if (preserve_selection) {
+            for (int i = 0; i < reader_state->doc.catalog_count; i++) {
+                ReaderCatalogItem *item = &reader_state->doc.catalog_items[i];
+
+                if (selected_chapter_uid[0] && item->chapter_uid &&
+                    strcmp(item->chapter_uid, selected_chapter_uid) == 0) {
+                    preserved_index = i;
+                    break;
+                }
+                if (selected_target[0] && item->target &&
+                    strcmp(item->target, selected_target) == 0) {
+                    preserved_index = i;
+                    break;
+                }
+                if (selected_chapter_idx > 0 && item->chapter_idx == selected_chapter_idx) {
+                    preserved_index = i;
+                    break;
+                }
+            }
+        }
+        if (preserved_index >= 0) {
+            reader_state->catalog_selected = preserved_index;
+        } else {
+            int index = ui_reader_view_current_catalog_index(reader_state);
+            reader_state->catalog_selected = index >= 0 ? index : 0;
+        }
         render_requested = reader_state->catalog_open && added_count > 0;
         fprintf(stderr,
                 "reader-catalog-bg: merged bookId=%s direction=%d added=%d count=%d total=%d\n",

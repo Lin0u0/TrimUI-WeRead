@@ -2496,7 +2496,10 @@ static int reader_load_internal(ApiContext *ctx, const char *target, int font_si
         goto cleanup;
     }
     doc->font_size = font_size;
-    if (!doc->content_text || !doc->target) {
+    if (!doc->content_text || !doc->content_text[0] || !doc->target) {
+        fprintf(stderr,
+                "reader-load: content text missing target=%s\n",
+                target);
         goto cleanup;
     }
     reader_focus_catalog(ctx, doc);

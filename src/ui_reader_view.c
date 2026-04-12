@@ -97,6 +97,8 @@ static void ui_reader_view_sync_catalog_selection(ReaderViewState *state) {
     }
     index = ui_reader_view_current_catalog_index(state);
     state->catalog_selected = index >= 0 ? index : 0;
+    state->catalog_scroll_top = state->catalog_selected > 2 ?
+        state->catalog_selected - 2 : 0;
 }
 
 static int ui_reader_view_anchor_offset(const ReaderViewState *state) {
@@ -287,6 +289,12 @@ static int ui_reader_view_init_from_document(TTF_Font *font, int content_width,
             content_height,
             honor_saved_position,
             state->doc.content_text ? strlen(state->doc.content_text) : 0u);
+    if (!state->doc.content_text || !state->doc.content_text[0]) {
+        fprintf(stderr,
+                "reader-view-init: empty content target=%s\n",
+                state->doc.target ? state->doc.target : "(null)");
+        return -1;
+    }
     if (state->content_font_size <= 0) {
         state->content_font_size = UI_READER_CONTENT_FONT_SIZE;
     }
@@ -330,6 +338,33 @@ static int ui_reader_view_init_from_document(TTF_Font *font, int content_width,
             state->current_page,
             state->line_height,
             state->lines_per_page);
+    return 0;
+}
+
+static int ui_reader_view_prepare_state(TTF_Font *font, ReaderDocument *doc,
+                                        int content_width, int content_height,
+                                        int honor_saved_position,
+                                        int content_font_size,
+                                        const char *fallback_font_path,
+                                        ReaderViewState *next_state) {
+    if (!doc || !next_state) {
+        return -1;
+    }
+
+    memset(next_state, 0, sizeof(*next_state));
+    next_state->doc = *doc;
+    memset(doc, 0, sizeof(*doc));
+    next_state->content_font_size = content_font_size > 0 ?
+        content_font_size : UI_READER_CONTENT_FONT_SIZE;
+    if (fallback_font_path && fallback_font_path[0]) {
+        snprintf(next_state->fallback_font_path, sizeof(next_state->fallback_font_path), "%s",
+                 fallback_font_path);
+    }
+    if (ui_reader_view_init_from_document(font, content_width, content_height,
+                                          honor_saved_position, next_state) != 0) {
+        ui_reader_view_free(next_state);
+        return -1;
+    }
     return 0;
 }
 
@@ -449,6 +484,7 @@ int ui_reader_view_adopt_document(TTF_Font *font, ReaderDocument *doc,
     int content_font_size = state ?
         state->content_font_size : UI_READER_CONTENT_FONT_SIZE;
     char fallback_font_path[512];
+    ReaderViewState next_state;
 
     ui_reader_view_copy_fallback_font_path(fallback_font_path, sizeof(fallback_font_path), state);
 
@@ -459,7 +495,6 @@ int ui_reader_view_adopt_document(TTF_Font *font, ReaderDocument *doc,
             doc && doc->content_text ? strlen(doc->content_text) : 0u,
             content_font_size,
             state ? state->line_count : -1);
-    ui_reader_view_free(state);
     if (!doc || !doc->content_text || !doc->target) {
         fprintf(stderr,
                 "reader-view-adopt: invalid document doc=%p target=%s content=%p\n",
@@ -468,21 +503,16 @@ int ui_reader_view_adopt_document(TTF_Font *font, ReaderDocument *doc,
                 (void *)(doc ? doc->content_text : NULL));
         return -1;
     }
-    state->doc = *doc;
-    state->content_font_size = content_font_size;
-    if (fallback_font_path[0]) {
-        snprintf(state->fallback_font_path, sizeof(state->fallback_font_path), "%s",
-                 fallback_font_path);
-    }
-    memset(doc, 0, sizeof(*doc));
-    if (ui_reader_view_init_from_document(font, content_width, content_height,
-                                          honor_saved_position, state) != 0) {
+    if (ui_reader_view_prepare_state(font, doc, content_width, content_height,
+                                     honor_saved_position, content_font_size,
+                                     fallback_font_path, &next_state) != 0) {
         fprintf(stderr,
                 "reader-view-adopt: init failed target=%s\n",
-                state->doc.target ? state->doc.target : "(null)");
-        ui_reader_view_free(state);
+                doc && doc->target ? doc->target : "(null)");
         return -1;
     }
+    ui_reader_view_free(state);
+    *state = next_state;
     fprintf(stderr,
             "reader-view-adopt: success target=%s lines=%d currentPage=%d\n",
             state->doc.target ? state->doc.target : "(null)",
@@ -497,23 +527,22 @@ int ui_reader_view_load(ApiContext *ctx, TTF_Font *font, const char *target,
     int content_font_size = state ?
         state->content_font_size : UI_READER_CONTENT_FONT_SIZE;
     char fallback_font_path[512];
+    ReaderDocument doc = {0};
+    ReaderViewState next_state;
 
     ui_reader_view_copy_fallback_font_path(fallback_font_path, sizeof(fallback_font_path), state);
 
+    if (reader_load(ctx, target, font_size, &doc) != 0) {
+        return -1;
+    }
+    if (ui_reader_view_prepare_state(font, &doc, content_width, content_height,
+                                     honor_saved_position, content_font_size,
+                                     fallback_font_path, &next_state) != 0) {
+        reader_document_free(&doc);
+        return -1;
+    }
     ui_reader_view_free(state);
-    if (reader_load(ctx, target, font_size, &state->doc) != 0) {
-        return -1;
-    }
-    state->content_font_size = content_font_size;
-    if (fallback_font_path[0]) {
-        snprintf(state->fallback_font_path, sizeof(state->fallback_font_path), "%s",
-                 fallback_font_path);
-    }
-    if (ui_reader_view_init_from_document(font, content_width, content_height,
-                                          honor_saved_position, state) != 0) {
-        ui_reader_view_free(state);
-        return -1;
-    }
+    *state = next_state;
     return 0;
 }
 

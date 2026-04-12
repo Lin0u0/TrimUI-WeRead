@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.9
+
+`0.1.9` rebuilds catalog navigation around a fixed center cursor and hardens chapter and article transitions so browsing no longer drifts into the wrong entry or a blank reader page.
+
+### Highlights
+
+- Reworked catalog navigation so opening lands the current chapter on the center line, single taps and held repeat both keep the selected row locked to the middle, and background catalog hydration preserves the item you are actively browsing
+- Made catalog confirm resolve the intended chapter more defensively: selected entries are validated against chapter ids and indexes, mismatched API targets fall back to the same prev/next chapter chain used by natural paging, and failed loads now stay on the current chapter instead of blanking the reader
+- Made reader document adoption transactional and reject empty-content pages, preventing white screens when a target resolves to a shell page or malformed response
+- Fixed shelf and article opening plumbing so article selections resolve through their real reader targets, while article HTML stripping now treats figures and images as block separators and keeps paragraph indentation after inline images
+- Moved tg5040 haptic stop timing onto a worker thread so pulses no longer block the render loop, and added host coverage for mixed article/book shelf indexing plus article-with-image reader fixtures
+
+### Notes
+
+This release is mostly about navigation integrity and interaction feel. The visible changes are the centered catalog and more reliable chapter and article opens, while the loader, parser, and haptic changes are there to keep those interactions stable on device.
+
 ## 0.1.8
 
 `0.1.8` finishes the公众号封面 path so article entries now look like proper shelf items instead of falling back to the generic article card whenever they are adjacent to the current book selection.
