@@ -202,7 +202,7 @@ test-smoke: $(HOST_APP_PATH)
 	@sh tests/smoke/cli_smoke.sh "$(HOST_APP_PATH)"
 
 test-package-audit-smoke:
-	@sh tests/smoke/package_audit_smoke.sh
+	@bash tests/smoke/package_audit_smoke.sh
 
 tg5040-sdk:
 	SDK_SHA256="$(TG5040_SDK_SHA256)" ./scripts/bootstrap_tg5040_sdk.sh "$(TG5040_SDK_ROOT)"
