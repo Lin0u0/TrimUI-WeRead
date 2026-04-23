@@ -159,6 +159,9 @@ int reader_state_load_position_by_book_id(ApiContext *ctx, const char *book_id,
     if (!ctx || !book_id || !*book_id || !target || target_size == 0) {
         return -1;
     }
+    if (source_target && source_target_size > 0) {
+        source_target[0] = '\0';
+    }
 
     positions = state_read_json(ctx, STATE_FILE_READER_POSITIONS);
     if (!positions || !cJSON_IsObject(positions)) {

@@ -197,10 +197,13 @@ static int ui_reader_flow_progress_finalize(ReaderViewState *state,
     result = report_state->result;
     now = SDL_GetTicks();
     if (result == READER_REPORT_OK) {
+        state->progress_session_expired = 0;
         state->progress_start_tick = now;
         if (!state->progress_paused) {
             state->progress_report_due_tick = now + UI_PROGRESS_REPORT_INTERVAL_MS;
         }
+    } else if (result == READER_REPORT_SESSION_EXPIRED) {
+        ui_reader_view_mark_progress_session_expired(state);
     } else if (!state->progress_paused) {
         state->progress_report_due_tick = now + UI_PROGRESS_REPORT_INTERVAL_MS;
     }
@@ -213,7 +216,8 @@ static void ui_reader_flow_queue_report(ApiContext *ctx, ReaderViewState *state,
                                         SDL_Thread **report_thread, int reading_seconds,
                                         int compute_progress) {
     if (!ctx || !state || !report_state || !report_thread ||
-        !state->doc.book_id || !state->doc.token || !state->doc.chapter_uid) {
+        !state->doc.book_id || !state->doc.token || !state->doc.chapter_uid ||
+        state->progress_session_expired) {
         return;
     }
 
@@ -635,28 +639,30 @@ int ui_reader_flow_tick_reader(ApiContext *ctx, ReaderViewState *reader_state,
         ui_reader_flow_progress_finalize(reader_state, progress_report,
                                          progress_report_thread_handle);
 
-        if (!reader_state->progress_paused &&
-            now >= reader_state->progress_pause_deadline_tick) {
-            reader_state->progress_paused = 1;
-            reader_state->progress_pause_tick = now;
-            reader_state->progress_report_due_tick = 0;
-        }
+        if (!reader_state->progress_session_expired) {
+            if (!reader_state->progress_paused &&
+                now >= reader_state->progress_pause_deadline_tick) {
+                reader_state->progress_paused = 1;
+                reader_state->progress_pause_tick = now;
+                reader_state->progress_report_due_tick = 0;
+            }
 
-        if (!*progress_report_thread_handle && !progress_report->running &&
-            !reader_state->progress_paused) {
-            if (reader_state->progress_initial_report_pending) {
-                reader_state->progress_initial_report_pending = 0;
-                ui_reader_flow_queue_report(ctx, reader_state, progress_report,
-                                            progress_report_thread_handle, 0, 0);
-            } else if (reader_state->progress_report_due_tick > 0 &&
-                       now >= reader_state->progress_report_due_tick) {
-                elapsed_ms = reader_state->progress_start_tick > 0 &&
-                    now > reader_state->progress_start_tick ?
-                    (now - reader_state->progress_start_tick) : 0;
-                elapsed_seconds = (int)(elapsed_ms / 1000);
-                ui_reader_flow_queue_report(ctx, reader_state, progress_report,
-                                            progress_report_thread_handle,
-                                            elapsed_seconds, 1);
+            if (!*progress_report_thread_handle && !progress_report->running &&
+                !reader_state->progress_paused) {
+                if (reader_state->progress_initial_report_pending) {
+                    reader_state->progress_initial_report_pending = 0;
+                    ui_reader_flow_queue_report(ctx, reader_state, progress_report,
+                                                progress_report_thread_handle, 0, 0);
+                } else if (reader_state->progress_report_due_tick > 0 &&
+                           now >= reader_state->progress_report_due_tick) {
+                    elapsed_ms = reader_state->progress_start_tick > 0 &&
+                        now > reader_state->progress_start_tick ?
+                        (now - reader_state->progress_start_tick) : 0;
+                    elapsed_seconds = (int)(elapsed_ms / 1000);
+                    ui_reader_flow_queue_report(ctx, reader_state, progress_report,
+                                                progress_report_thread_handle,
+                                                elapsed_seconds, 1);
+                }
             }
         }
     }
@@ -866,7 +872,24 @@ int ui_reader_flow_finish_open(ApiContext *ctx, TTF_Font *body_font,
         fprintf(stderr,
                 "reader-open-finish: ready but adopt failed source=%s\n",
                 reader_open->source_target);
-        ui_reader_flow_reader_open_state_reset(reader_open);
+        {
+            char retry_target[2048];
+            char retry_book_id[256];
+            int retry_font_size = reader_open->font_size;
+
+            ui_copy_string(retry_target, sizeof(retry_target), reader_open->source_target);
+            ui_copy_string(retry_book_id, sizeof(retry_book_id), reader_open->book_id);
+            reader_document_free(&reader_open->doc);
+            memset(reader_open, 0, sizeof(*reader_open));
+            ui_copy_string(reader_open->source_target, sizeof(reader_open->source_target),
+                           retry_target);
+            ui_copy_string(reader_open->book_id, sizeof(reader_open->book_id), retry_book_id);
+            reader_open->font_size = retry_font_size;
+            reader_open->failed = 1;
+            *view = VIEW_OPENING;
+            snprintf(status, status_size,
+                     "\xE6\x97\xA0\xE6\xB3\x95\xE5\x87\x86\xE5\xA4\x87\xE9\x98\x85\xE8\xAF\xBB\xE9\xA1\xB5\xE9\x9D\xA2\xEF\xBC\x8C\xE6\x8C\x89 A \xE9\x87\x8D\xE8\xAF\x95");
+        }
     }
 
     return 1;

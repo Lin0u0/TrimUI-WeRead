@@ -351,8 +351,8 @@ int session_service_login_start_background(const char *data_dir, const char *ca_
 }
 
 int session_service_login_poll_background(const char *data_dir, const char *ca_file,
-                                          AuthSession *session, const int *stop,
-                                          int *completed, AuthPollStatus *last_status) {
+                                          AuthSession *session, const atomic_int *stop,
+                                          atomic_int *completed, AuthPollStatus *last_status) {
     ApiContext ctx;
     int rc = -1;
 
@@ -360,7 +360,8 @@ int session_service_login_poll_background(const char *data_dir, const char *ca_f
         return -1;
     }
 
-    while (!(stop && *stop) && !(completed && *completed)) {
+    while (!(stop && atomic_load(stop)) &&
+           !(completed && atomic_load(completed))) {
         AuthPollStatus status = AUTH_POLL_WAITING;
 
         if (session_service_login_poll_once(&ctx, session, &status) == 0) {
@@ -369,7 +370,7 @@ int session_service_login_poll_background(const char *data_dir, const char *ca_f
             }
             if (status == AUTH_POLL_CONFIRMED) {
                 if (completed) {
-                    *completed = 1;
+                    atomic_store(completed, 1);
                 }
                 rc = 0;
                 break;

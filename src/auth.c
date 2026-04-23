@@ -26,12 +26,13 @@ static int b64_value(char ch) {
     return -1;
 }
 
-static int save_base64_png(const char *data_url, const char *path) {
+int save_base64_png(const char *data_url, const char *path) {
     const char *marker = "base64,";
     const char *base64 = strstr(data_url, marker);
     FILE *fp;
     int val = 0;
     int valb = -8;
+    int rc = -1;
 
     if (!base64) {
         fprintf(stderr, "QR response did not contain base64 image data\n");
@@ -57,13 +58,23 @@ static int save_base64_png(const char *data_url, const char *path) {
         valb += 6;
         if (valb >= 0) {
             unsigned char byte = (unsigned char)((val >> valb) & 0xFF);
-            fwrite(&byte, 1, 1, fp);
+            if (fwrite(&byte, 1, 1, fp) != 1) {
+                goto cleanup;
+            }
             valb -= 8;
         }
     }
 
-    fclose(fp);
-    return 0;
+    rc = 0;
+
+cleanup:
+    if (fclose(fp) != 0) {
+        rc = -1;
+    }
+    if (rc != 0) {
+        unlink(path);
+    }
+    return rc;
 }
 
 static int json_item_to_text(cJSON *item, char *buf, size_t buf_size) {

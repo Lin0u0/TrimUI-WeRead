@@ -44,11 +44,14 @@ jobs:
       - name: Run release preflight
         run: make doctor-release
 
-      - name: Run host verification
+      - name: Run host CLI verification
         run: make test-host
 
-      - name: Run host smoke
+      - name: Run host CLI smoke
         run: make test-smoke
+
+      - name: Run package audit smoke
+        run: make test-package-audit-smoke
 
       - name: Build TrimUI packages
         run: make package-all

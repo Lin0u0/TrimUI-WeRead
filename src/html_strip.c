@@ -12,16 +12,41 @@ static int utf8_char_len(unsigned char c) {
     return 1;
 }
 
+static int utf8_is_continuation(unsigned char c) {
+    return (c & 0xC0) == 0x80;
+}
+
 static uint32_t utf8_decode(const char *s, int *out_len) {
-    unsigned char c = (unsigned char)s[0];
+    const unsigned char *p = (const unsigned char *)s;
+    unsigned char c = p[0];
     int len = utf8_char_len(c);
 
     if (out_len) *out_len = len;
 
     if (len == 1) return c;
-    if (len == 2) return ((c & 0x1F) << 6) | (s[1] & 0x3F);
-    if (len == 3) return ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
-    if (len == 4) return ((c & 0x07) << 18) | ((s[1] & 0x3F) << 12) | ((s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+    if (len == 2) {
+        if (!p[1] || !utf8_is_continuation(p[1])) {
+            if (out_len) *out_len = 1;
+            return c;
+        }
+        return ((c & 0x1F) << 6) | (p[1] & 0x3F);
+    }
+    if (len == 3) {
+        if (!p[1] || !p[2] || !utf8_is_continuation(p[1]) || !utf8_is_continuation(p[2])) {
+            if (out_len) *out_len = 1;
+            return c;
+        }
+        return ((c & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+    }
+    if (len == 4) {
+        if (!p[1] || !p[2] || !p[3] ||
+            !utf8_is_continuation(p[1]) || !utf8_is_continuation(p[2]) ||
+            !utf8_is_continuation(p[3])) {
+            if (out_len) *out_len = 1;
+            return c;
+        }
+        return ((c & 0x07) << 18) | ((p[1] & 0x3F) << 12) | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+    }
     return c;
 }
 

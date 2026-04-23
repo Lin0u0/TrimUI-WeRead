@@ -686,6 +686,16 @@ int ui_reader_view_current_page_offset(const ReaderViewState *state) {
                                           ui_reader_view_total_pages((ReaderViewState *)state));
 }
 
+void ui_reader_view_mark_progress_session_expired(ReaderViewState *state) {
+    if (!state) {
+        return;
+    }
+    state->progress_session_expired = 1;
+    state->progress_paused = 1;
+    state->progress_initial_report_pending = 0;
+    state->progress_report_due_tick = 0;
+}
+
 int ui_reader_view_current_catalog_index(ReaderViewState *state) {
     int i;
 
@@ -736,6 +746,9 @@ void ui_reader_view_note_progress_activity(ReaderViewState *state, Uint32 now) {
     if (!state) {
         return;
     }
+    if (state->progress_session_expired) {
+        return;
+    }
     if (!state->progress_initialized) {
         ui_reader_view_progress_begin(state, now);
         return;
@@ -773,6 +786,9 @@ void ui_reader_view_flush_progress_blocking(ApiContext *ctx, ReaderViewState *st
         !state->doc.chapter_uid) {
         return;
     }
+    if (state->progress_session_expired) {
+        return;
+    }
 
     now = SDL_GetTicks();
     ui_reader_view_note_progress_activity(state, now);
@@ -790,10 +806,13 @@ void ui_reader_view_flush_progress_blocking(ApiContext *ctx, ReaderViewState *st
                                         elapsed_seconds, page_summary,
                                         compute_progress);
     if (rc == READER_REPORT_OK) {
+        state->progress_session_expired = 0;
         state->progress_start_tick = now;
         if (!state->progress_paused) {
             state->progress_report_due_tick = now + UI_PROGRESS_REPORT_INTERVAL_MS;
         }
+    } else if (rc == READER_REPORT_SESSION_EXPIRED) {
+        ui_reader_view_mark_progress_session_expired(state);
     } else if (!state->progress_paused) {
         state->progress_report_due_tick = now + UI_PROGRESS_REPORT_INTERVAL_MS;
     }

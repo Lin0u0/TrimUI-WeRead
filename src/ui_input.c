@@ -35,7 +35,6 @@ static UiInputMask ui_input_scancode_bit(SDL_Scancode scancode) {
         case SDL_SCANCODE_PAGEDOWN: return UI_INPUT_BIT(KEY_PAGEDOWN);
         case SDL_SCANCODE_P: return UI_INPUT_BIT(KEY_P);
         case SDL_SCANCODE_POWER: return UI_INPUT_BIT(KEY_POWER);
-        case SDL_SCANCODE_L: return UI_INPUT_BIT(KEY_L);
         default:
             return 0;
     }
@@ -223,44 +222,6 @@ int ui_event_is_catalog_toggle(const SDL_Event *event, int tg5040_input,
            ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_X, suppression);
 }
 
-int ui_event_is_rotate(const SDL_Event *event, int tg5040_input,
-                       const UiInputSuppression *suppression) {
-    (void)tg5040_input;
-    return ui_event_is_keydown(event, SDLK_TAB, SDL_SCANCODE_TAB, suppression);
-}
-
-int ui_event_is_rotate_combo(const SDL_Event *event, int tg5040_input,
-                             int select_pressed, int start_pressed,
-                             const UiInputSuppression *suppression) {
-    (void)select_pressed;
-    (void)start_pressed;
-    return ui_event_is_rotate(event, tg5040_input, suppression) ||
-           ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_R2, suppression);
-}
-
-int ui_event_is_dark_mode_toggle(const SDL_Event *event, int tg5040_input, int select_pressed,
-                                 const UiInputSuppression *suppression) {
-    (void)select_pressed;
-    if (ui_event_is_keydown(event, SDLK_t, SDL_SCANCODE_T, suppression)) {
-        return 1;
-    }
-    return ui_event_is_tg5040_button_down(event, tg5040_input, TG5040_JOY_L2, suppression);
-}
-
-int ui_event_is_brightness_up(const SDL_Event *event, int tg5040_input, int start_pressed,
-                              const UiInputSuppression *suppression) {
-    (void)tg5040_input;
-    (void)start_pressed;
-    return ui_event_is_keydown(event, SDLK_RIGHTBRACKET, SDL_SCANCODE_RIGHTBRACKET, suppression);
-}
-
-int ui_event_is_brightness_down(const SDL_Event *event, int tg5040_input, int start_pressed,
-                                const UiInputSuppression *suppression) {
-    (void)tg5040_input;
-    (void)start_pressed;
-    return ui_event_is_keydown(event, SDLK_LEFTBRACKET, SDL_SCANCODE_LEFTBRACKET, suppression);
-}
-
 int ui_event_is_lock_button(const SDL_Event *event, const UiInputSuppression *suppression) {
     return ui_event_is_keydown(event, SDLK_POWER, SDL_SCANCODE_POWER, suppression) ||
            ui_event_is_keydown(event, SDLK_p, SDL_SCANCODE_P, suppression);
@@ -415,9 +376,6 @@ UiInputMask ui_input_current_mask(int tg5040_input, SDL_Joystick **joysticks, in
         if (keys[SDL_SCANCODE_POWER]) {
             mask |= UI_INPUT_BIT(KEY_POWER);
         }
-        if (keys[SDL_SCANCODE_L]) {
-            mask |= UI_INPUT_BIT(KEY_L);
-        }
     }
 
     if (!tg5040_input) {
@@ -546,38 +504,26 @@ UiInputMask ui_input_apply_event(UiInputMask current_mask, const SDL_Event *even
     }
 }
 
-void ui_input_suppression_reset(UiInputSuppression *suppression) {
-    if (!suppression) {
-        return;
+UiInputMask ui_input_event_mask(const SDL_Event *event, int tg5040_input) {
+    if (!event) {
+        return 0;
     }
-    suppression->blocked_mask = 0;
-    suppression->released_since_block_mask = 0;
-}
-
-void ui_input_suppression_begin(UiInputSuppression *suppression, UiInputMask active_mask) {
-    if (!suppression) {
-        return;
+    switch (event->type) {
+        case SDL_KEYDOWN:
+            if (event->key.repeat != 0) {
+                return 0;
+            }
+            return ui_input_scancode_bit(event->key.keysym.scancode);
+        case SDL_JOYBUTTONDOWN:
+            return tg5040_input ? ui_input_button_bit(event->jbutton.button) : 0;
+        case SDL_JOYHATMOTION:
+            return tg5040_input ? ui_input_hat_mask(event->jhat.value) : 0;
+        case SDL_JOYAXISMOTION:
+            return tg5040_input ?
+                ui_input_axis_mask(event->jaxis.axis, event->jaxis.value) : 0;
+        default:
+            return 0;
     }
-    suppression->blocked_mask = active_mask;
-    /* A freshly blocked bit is unreleased: it must be observed low at least
-     * once before it is allowed to clear. Bits that are not held at the
-     * moment of the transition are never blocked, so seeding them as
-     * already-released is harmless. */
-    suppression->released_since_block_mask = ~active_mask;
-}
-
-void ui_input_suppression_refresh(UiInputSuppression *suppression, UiInputMask active_mask) {
-    if (!suppression) {
-        return;
-    }
-    /* Mark any bit currently low as "seen released" so it becomes eligible
-     * for clearing. This is sticky: a momentary spurious low will not be
-     * forgotten, but a bit that is genuinely held stays blocked. */
-    suppression->released_since_block_mask |= ~active_mask;
-    /* Only clear bits from blocked_mask that have been released at least
-     * once AND are currently low. A re-press observed in the same frame
-     * will keep the bit blocked because active_mask has it high. */
-    suppression->blocked_mask &= active_mask | ~suppression->released_since_block_mask;
 }
 
 int ui_input_mask_is_held(UiInputMask mask, int tg5040_input, SDL_Joystick **joysticks,
@@ -622,48 +568,31 @@ int ui_input_is_page_next_held(int tg5040_input, SDL_Joystick **joysticks, int j
                                  joystick_count, suppression);
 }
 
-UiRepeatAction ui_repeat_action_current(UiView view, const ReaderViewState *reader_state,
-                                        UiInputMask observed_input_mask,
-                                        int tg5040_input, SDL_Joystick **joysticks,
-                                        int joystick_count,
+UiInputCommand ui_input_command_for_event(const SDL_Event *event, int tg5040_input,
+                                          const UiInputSuppression *suppression) {
+    UiInputMask mask = ui_input_event_mask(event, tg5040_input);
+
+    if (suppression) {
+        mask &= ~suppression->blocked_mask;
+    }
+    return ui_input_command_for_mask(mask);
+}
+
+UiInputAction ui_input_action_for_event(UiInputScope scope, const SDL_Event *event,
+                                        int tg5040_input,
                                         const UiInputSuppression *suppression) {
-    (void)observed_input_mask;
-    if (view == VIEW_SHELF) {
-        if (ui_input_is_down_held(tg5040_input, joysticks, joystick_count, suppression) ||
-            ui_input_is_right_held(tg5040_input, joysticks, joystick_count, suppression)) {
-            return UI_REPEAT_SHELF_NEXT;
-        }
-        if (ui_input_is_up_held(tg5040_input, joysticks, joystick_count, suppression) ||
-            ui_input_is_left_held(tg5040_input, joysticks, joystick_count, suppression)) {
-            return UI_REPEAT_SHELF_PREV;
-        }
-        return UI_REPEAT_NONE;
-    }
-    if (view != VIEW_READER || !reader_state) {
-        return UI_REPEAT_NONE;
-    }
-    if (reader_state->catalog_open) {
-        if (ui_input_is_up_held(tg5040_input, joysticks, joystick_count, suppression)) {
-            return UI_REPEAT_CATALOG_UP;
-        }
-        if (ui_input_is_down_held(tg5040_input, joysticks, joystick_count, suppression)) {
-            return UI_REPEAT_CATALOG_DOWN;
-        }
-        if (ui_input_is_left_held(tg5040_input, joysticks, joystick_count, suppression)) {
-            return UI_REPEAT_CATALOG_PAGE_PREV;
-        }
-        if (ui_input_is_right_held(tg5040_input, joysticks, joystick_count, suppression)) {
-            return UI_REPEAT_CATALOG_PAGE_NEXT;
-        }
-        return UI_REPEAT_NONE;
-    }
-    if (ui_input_is_page_prev_held(tg5040_input, joysticks, joystick_count, suppression)) {
-        return UI_REPEAT_PAGE_PREV;
-    }
-    if (ui_input_is_page_next_held(tg5040_input, joysticks, joystick_count, suppression)) {
-        return UI_REPEAT_PAGE_NEXT;
-    }
-    return UI_REPEAT_NONE;
+    return ui_input_action_for_command(
+        scope,
+        ui_input_command_for_event(event, tg5040_input, suppression));
+}
+
+UiInputAction ui_input_repeat_action_current(UiInputScope scope, int tg5040_input,
+                                             SDL_Joystick **joysticks,
+                                             int joystick_count,
+                                             const UiInputSuppression *suppression) {
+    return ui_input_repeat_action_for_mask(
+        scope,
+        ui_input_unblocked_mask(tg5040_input, joysticks, joystick_count, suppression));
 }
 
 #endif /* HAVE_SDL */

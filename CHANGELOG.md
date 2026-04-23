@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.10
+
+`0.1.10` is a maintenance-heavy release that breaks up the large reader and UI surfaces, tightens fragile WeRead parsing paths, and adds stronger release-package checks before shipping.
+
+### Highlights
+
+- Split the monolithic reader implementation into dedicated book, article, font, target, parser, and progress modules, making article shell resolution, book-page parsing, and font handling easier to reason about independently
+- Split the SDL UI runtime into input dispatch, view input, render, settings, lifecycle, event, frame, and tick modules so shelf, reader, catalog, settings, and login handling no longer all live in one giant file
+- Hardened network and parser behavior with connect timeouts, one-shot reader fetches, slow/failure timing logs, decoded JavaScript string aliases, and safer UTF-8 handling in stripped HTML
+- Improved reader state and progress handling with atomic JSON writes, source-target aware resume data, session-expired progress handling that stops retry loops, and retry preservation when a reader page fails to prepare
+- Added package audit smoke coverage for launcher and binary executable bits, and wired that check into the documented release gates and GitHub release workflow
+
+### Notes
+
+This release is mainly about reducing maintenance risk after the article/catalog work in `0.1.7` through `0.1.9`. The visible app behavior should stay familiar, but the internals are now split into smaller ownership areas and the release pipeline catches more packaging mistakes before a tag is published.
+
 ## 0.1.9
 
 `0.1.9` rebuilds catalog navigation around a fixed center cursor and hardens chapter and article transitions so browsing no longer drifts into the wrong entry or a blank reader page.

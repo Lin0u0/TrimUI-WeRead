@@ -142,9 +142,20 @@ static void assert_reader_parser_helpers(void) {
     free(html);
 }
 
+static void assert_reader_alias_string_decoding(void) {
+    const char *html =
+        "<script>window.__NUXT__=(function(a){return {title:a}}('Ch\\u0061pter\\'s'));</script>";
+    char *title = reader_resolve_nuxt_alias_string(html, "a");
+
+    HOST_TEST_ASSERT(title != NULL);
+    HOST_TEST_ASSERT(strcmp(title, "Chapter's") == 0);
+    free(title);
+}
+
 int main(void) {
     assert_parser_common_fragments();
     assert_api_extract_nuxt_fixture();
     assert_reader_parser_helpers();
+    assert_reader_alias_string_decoding();
     return 0;
 }

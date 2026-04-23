@@ -9,6 +9,8 @@ Begin with the host verification hard gates:
 - `make test-host`
 - `make test-smoke`
 
+These are host-native CLI checks only. They do not validate SDL rendering or packaged launcher behavior.
+
 Then use the repo docs in this order:
 
 - [MAINTAINER_BOUNDARIES.md](MAINTAINER_BOUNDARIES.md) for source ownership and protected runtime names.
@@ -77,12 +79,17 @@ Also keep `state/preferences.json` in mind for reader-facing behavior such as br
 
 ### Verification and Regression Checks
 
-Phase 03 established a hard-gate versus advisory split. Keep that split explicit.
+Phase 03 established a hard-gate versus advisory split. Keep that split explicit, and do not treat host CLI checks as coverage for SDL or launcher paths.
 
-Hard gates:
+Host gates:
 
 - `make test-host`
 - `make test-smoke`
+
+Package and launcher gates:
+
+- `make test-package-audit-smoke`
+- `make package-audit-all`
 
 Advisory follow-up:
 
@@ -90,7 +97,7 @@ Advisory follow-up:
 - `make nextui-release stock-release crossmix-release`
 - manual tg5040 smoke for login, shelf refresh, reader open/resume, and progress sync
 
-Use the hard gates for normal maintainer iteration first. Use the advisory checks when a change touches tg5040 packaging, launcher-sensitive paths, or release confidence matters.
+Use the host gates for normal maintainer iteration first. Use the package and launcher gates when a change touches tg5040 packaging, launcher-sensitive paths, or release confidence matters.
 
 ### Release-Adjacent Prep
 
@@ -126,6 +133,6 @@ For the full ownership map and protected runtime contract, use [MAINTAINER_BOUND
 - Stale `state/shelf.json`, where cached shelf behavior masks a live fetch failure or old shelf data keeps reappearing.
 - Mismatched resume state in `state/last-reader.json` or `state/reader-positions.json`, especially when local state and cloud progress disagree about the right chapter or page.
 - Failing host verification commands, starting with `make test-host` and `make test-smoke`, which should be treated as real regressions before doing package or device follow-up.
-- tg5040 and package-sensitive paths, where `make tg5040` or `make nextui-release stock-release crossmix-release` exposes launcher, archive, asset, or cross-build assumptions that host checks do not cover.
+- tg5040 and package-sensitive paths, where `make tg5040`, `make test-package-audit-smoke`, `make package-audit-all`, or `make nextui-release stock-release crossmix-release` exposes launcher, archive, asset, or cross-build assumptions that host checks do not cover.
 
 This guide intentionally stays focused on the highest-frequency real-world paths: session/cookie handling, shelf cache behavior, resume/local reader state, host verification commands, and tg5040/package-sensitive issues. It does not try to document every possible failure tree or future release hardening flow.

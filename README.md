@@ -185,13 +185,20 @@ Required host gates:
 - `make test-host`
 - `make test-smoke`
 
+Package and launcher checks:
+
+- `make test-package-audit-smoke`
+- `make package-audit-all`
+
 Advisory checks:
 
 - `make tg5040`
 - `make nextui-release stock-release crossmix-release`
 - Manual tg5040 smoke for login, shelf refresh, reader open/resume, and progress sync
 
-The smoke script intentionally stays thin and host-native. It verifies stable CLI-visible paths like `--help`, cached shelf output, and resume command behavior without turning device validation into automation in this phase.
+The smoke script intentionally stays thin and host-native. It verifies stable CLI-visible paths like `--help`, cached shelf output, and resume command behavior. It does not exercise SDL UI rendering or packaged launcher paths.
+
+The package audit smoke checks the audit helper against fixture archives, including launcher executability. The full package audit gates the real TrimUI package layouts, bundled libraries, and tg5040 ELF dependencies.
 
 ## Known Scope
 

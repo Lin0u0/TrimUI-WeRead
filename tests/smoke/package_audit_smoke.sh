@@ -32,6 +32,8 @@ EOF
   : >"$tree_root/Tools/tg5040/WeRead.pak/res/cacert.pem"
   : >"$tree_root/Tools/tg5040/WeRead.pak/pak.json"
   : >"$tree_root/Tools/tg5040/.media/WeRead.png"
+  chmod +x "$tree_root/Tools/tg5040/WeRead.pak/launch.sh"
+  chmod +x "$tree_root/Tools/tg5040/WeRead.pak/bin/tg5040/weread"
 
   for lib in \
     libSDL2.so \
@@ -83,6 +85,40 @@ make_archive "$PASS_TREE" "$PASS_ARCHIVE"
 
 READELF="$READELF_STUB" "$AUDIT_SCRIPT" nextui "$PASS_ARCHIVE"
 
+chmod -x "$PASS_TREE/Tools/tg5040/WeRead.pak/launch.sh"
+FAIL_EXEC_LAUNCH_ARCHIVE="$WORK_DIR/WeRead-nextui-no-launch-exec.tar.gz"
+make_archive "$PASS_TREE" "$FAIL_EXEC_LAUNCH_ARCHIVE"
+
+FAIL_LOG="$WORK_DIR/fail-launch.log"
+if READELF="$READELF_STUB" "$AUDIT_SCRIPT" nextui "$FAIL_EXEC_LAUNCH_ARCHIVE" >"$FAIL_LOG" 2>&1; then
+  echo "package audit smoke failed: expected missing-launch-exec case to fail" >&2
+  exit 1
+fi
+
+grep -Fq 'missing executable bit: Tools/tg5040/WeRead.pak/launch.sh' "$FAIL_LOG" || {
+  echo "package audit smoke failed: missing expected launch exec error text" >&2
+  cat "$FAIL_LOG" >&2
+  exit 1
+}
+
+chmod +x "$PASS_TREE/Tools/tg5040/WeRead.pak/launch.sh"
+chmod -x "$PASS_TREE/Tools/tg5040/WeRead.pak/bin/tg5040/weread"
+FAIL_EXEC_BIN_ARCHIVE="$WORK_DIR/WeRead-nextui-no-bin-exec.tar.gz"
+make_archive "$PASS_TREE" "$FAIL_EXEC_BIN_ARCHIVE"
+
+FAIL_BIN_LOG="$WORK_DIR/fail-bin.log"
+if READELF="$READELF_STUB" "$AUDIT_SCRIPT" nextui "$FAIL_EXEC_BIN_ARCHIVE" >"$FAIL_BIN_LOG" 2>&1; then
+  echo "package audit smoke failed: expected missing-bin-exec case to fail" >&2
+  exit 1
+fi
+
+grep -Fq 'missing executable bit: Tools/tg5040/WeRead.pak/bin/tg5040/weread' "$FAIL_BIN_LOG" || {
+  echo "package audit smoke failed: missing expected bin exec error text" >&2
+  cat "$FAIL_BIN_LOG" >&2
+  exit 1
+}
+
+chmod +x "$PASS_TREE/Tools/tg5040/WeRead.pak/bin/tg5040/weread"
 rm -f "$PASS_TREE/Tools/tg5040/WeRead.pak/res/cacert.pem"
 FAIL_ARCHIVE="$WORK_DIR/WeRead-nextui-missing-cacert.tar.gz"
 make_archive "$PASS_TREE" "$FAIL_ARCHIVE"

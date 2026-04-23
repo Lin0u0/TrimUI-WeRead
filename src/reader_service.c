@@ -6,6 +6,7 @@
 #include "reader_service.h"
 
 static ReaderServiceOps reader_service_test_ops = {0};
+static ReaderServiceReportProgressFn reader_service_report_progress_override = NULL;
 
 static char *reader_service_dup_or_null(const char *value) {
     if (!value) {
@@ -49,6 +50,10 @@ void reader_service_set_test_ops(const ReaderServiceOps *ops) {
     } else {
         memset(&reader_service_test_ops, 0, sizeof(reader_service_test_ops));
     }
+}
+
+void reader_service_set_report_progress_override(ReaderServiceReportProgressFn fn) {
+    reader_service_report_progress_override = fn;
 }
 
 static const char *reader_service_find_progress_target(const ReaderDocument *doc) {
@@ -354,6 +359,11 @@ int reader_service_report_progress(ApiContext *ctx, const ReaderDocument *doc, i
                                    int total_pages, int chapter_offset,
                                    int reading_seconds, const char *page_summary,
                                    int compute_progress) {
+    if (reader_service_report_progress_override) {
+        return reader_service_report_progress_override(ctx, doc, current_page, total_pages,
+                                                      chapter_offset, reading_seconds,
+                                                      page_summary, compute_progress);
+    }
     if (!ctx || !doc) {
         return READER_REPORT_ERROR;
     }
@@ -388,7 +398,7 @@ int reader_service_report_progress_with_retry(const char *data_dir, const char *
     result = reader_service_report_progress(&ctx, doc, current_page, total_pages,
                                             chapter_offset, reading_seconds,
                                             page_summary, compute_progress);
-    if (result != 0) {
+    if (result != 0 && result != READER_REPORT_SESSION_EXPIRED) {
         result = reader_service_report_progress(&ctx, doc, current_page, total_pages,
                                                 chapter_offset, reading_seconds,
                                                 page_summary, compute_progress);

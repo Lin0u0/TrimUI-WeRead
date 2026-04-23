@@ -8,14 +8,17 @@
 #define UI_INTERNAL_H
 
 #include "ui.h"
+#include "ui_input_action.h"
 
 #if HAVE_SDL
 
 #include <SDL.h>
 #include <SDL_ttf.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include "auth.h"
 #include "reader.h"
+#include "session_service.h"
 
 /* ====================== Type Definitions ====================== */
 
@@ -54,18 +57,6 @@ typedef enum {
     UI_ROTATE_LEFT_PORTRAIT = 2
 } UiRotation;
 
-typedef enum {
-    UI_REPEAT_NONE = 0,
-    UI_REPEAT_SHELF_PREV,
-    UI_REPEAT_SHELF_NEXT,
-    UI_REPEAT_CATALOG_UP,
-    UI_REPEAT_CATALOG_DOWN,
-    UI_REPEAT_CATALOG_PAGE_PREV,
-    UI_REPEAT_CATALOG_PAGE_NEXT,
-    UI_REPEAT_PAGE_PREV,
-    UI_REPEAT_PAGE_NEXT
-} UiRepeatAction;
-
 typedef struct {
     int canvas_w;
     int canvas_h;
@@ -76,104 +67,19 @@ typedef struct {
 } UiLayout;
 
 typedef struct {
-    UiRepeatAction action;
+    UiInputAction action;
     Uint32 next_tick;
 } UiRepeatState;
 
-typedef uint64_t UiInputMask;
-
-typedef struct {
-    UiInputMask blocked_mask;
-    UiInputMask released_since_block_mask;
-} UiInputSuppression;
-
 enum {
-    UI_INPUT_PHYS_KEY_UP = 0,
-    UI_INPUT_PHYS_KEY_W,
-    UI_INPUT_PHYS_KEY_DOWN,
-    UI_INPUT_PHYS_KEY_S,
-    UI_INPUT_PHYS_KEY_LEFT,
-    UI_INPUT_PHYS_KEY_A,
-    UI_INPUT_PHYS_KEY_RIGHT,
-    UI_INPUT_PHYS_KEY_D,
-    UI_INPUT_PHYS_KEY_ESCAPE,
-    UI_INPUT_PHYS_KEY_B,
-    UI_INPUT_PHYS_KEY_BACKSPACE,
-    UI_INPUT_PHYS_KEY_RETURN,
-    UI_INPUT_PHYS_KEY_SPACE,
-    UI_INPUT_PHYS_KEY_R,
-    UI_INPUT_PHYS_KEY_C,
-    UI_INPUT_PHYS_KEY_Y,
-    UI_INPUT_PHYS_KEY_TAB,
-    UI_INPUT_PHYS_KEY_T,
-    UI_INPUT_PHYS_KEY_LEFTBRACKET,
-    UI_INPUT_PHYS_KEY_RIGHTBRACKET,
-    UI_INPUT_PHYS_KEY_PAGEUP,
-    UI_INPUT_PHYS_KEY_PAGEDOWN,
-    UI_INPUT_PHYS_KEY_P,
-    UI_INPUT_PHYS_KEY_POWER,
-    UI_INPUT_PHYS_KEY_L,
-    UI_INPUT_PHYS_JOY_A,
-    UI_INPUT_PHYS_JOY_B,
-    UI_INPUT_PHYS_JOY_X,
-    UI_INPUT_PHYS_JOY_Y,
-    UI_INPUT_PHYS_JOY_L1,
-    UI_INPUT_PHYS_JOY_R1,
-    UI_INPUT_PHYS_JOY_L2,
-    UI_INPUT_PHYS_JOY_R2,
-    UI_INPUT_PHYS_JOY_SELECT,
-    UI_INPUT_PHYS_JOY_START,
-    UI_INPUT_PHYS_HAT_UP,
-    UI_INPUT_PHYS_HAT_DOWN,
-    UI_INPUT_PHYS_HAT_LEFT,
-    UI_INPUT_PHYS_HAT_RIGHT,
-    UI_INPUT_PHYS_AXIS_X_NEG,
-    UI_INPUT_PHYS_AXIS_X_POS,
-    UI_INPUT_PHYS_AXIS_Y_NEG,
-    UI_INPUT_PHYS_AXIS_Y_POS
+    UI_HAPTIC_CONFIRM_MS = 58,
+    UI_HAPTIC_EMPHASIS_MS = 78
 };
-
-#define UI_INPUT_BIT(name) (1ULL << UI_INPUT_PHYS_##name)
-#define UI_INPUT_MASK_UP \
-    (UI_INPUT_BIT(KEY_UP) | UI_INPUT_BIT(KEY_W) | UI_INPUT_BIT(HAT_UP) | UI_INPUT_BIT(AXIS_Y_NEG))
-#define UI_INPUT_MASK_DOWN \
-    (UI_INPUT_BIT(KEY_DOWN) | UI_INPUT_BIT(KEY_S) | UI_INPUT_BIT(HAT_DOWN) | UI_INPUT_BIT(AXIS_Y_POS))
-#define UI_INPUT_MASK_LEFT \
-    (UI_INPUT_BIT(KEY_LEFT) | UI_INPUT_BIT(KEY_A) | UI_INPUT_BIT(HAT_LEFT) | UI_INPUT_BIT(AXIS_X_NEG))
-#define UI_INPUT_MASK_RIGHT \
-    (UI_INPUT_BIT(KEY_RIGHT) | UI_INPUT_BIT(KEY_D) | UI_INPUT_BIT(HAT_RIGHT) | UI_INPUT_BIT(AXIS_X_POS))
-#define UI_INPUT_MASK_LOGIN_BACK \
-    (UI_INPUT_BIT(KEY_ESCAPE) | UI_INPUT_BIT(KEY_B) | UI_INPUT_BIT(KEY_BACKSPACE) | UI_INPUT_BIT(JOY_B))
-#define UI_INPUT_MASK_LOGIN_CONFIRM \
-    (UI_INPUT_BIT(KEY_RETURN) | UI_INPUT_BIT(KEY_SPACE) | UI_INPUT_BIT(KEY_A) | UI_INPUT_BIT(JOY_A))
-#define UI_INPUT_MASK_CONFIRM \
-    (UI_INPUT_BIT(KEY_RETURN) | UI_INPUT_BIT(KEY_SPACE) | UI_INPUT_BIT(JOY_A))
-#define UI_INPUT_MASK_SHELF_RESUME \
-    (UI_INPUT_BIT(KEY_R) | UI_INPUT_BIT(JOY_X))
-#define UI_INPUT_MASK_CATALOG_TOGGLE \
-    (UI_INPUT_BIT(KEY_C) | UI_INPUT_BIT(JOY_X))
-#define UI_INPUT_MASK_SETTINGS_OPEN \
-    (UI_INPUT_BIT(KEY_Y) | UI_INPUT_BIT(JOY_Y))
-#define UI_INPUT_MASK_ROTATE \
-    (UI_INPUT_BIT(KEY_TAB) | UI_INPUT_BIT(JOY_R2))
-#define UI_INPUT_MASK_DARK_MODE \
-    (UI_INPUT_BIT(KEY_T) | UI_INPUT_BIT(JOY_L2))
-#define UI_INPUT_MASK_BRIGHTNESS_UP (UI_INPUT_BIT(KEY_RIGHTBRACKET))
-#define UI_INPUT_MASK_BRIGHTNESS_DOWN (UI_INPUT_BIT(KEY_LEFTBRACKET))
-#define UI_INPUT_MASK_LOCK_BUTTON \
-    (UI_INPUT_BIT(KEY_POWER) | UI_INPUT_BIT(KEY_P))
-#define UI_INPUT_MASK_CHAPTER_PREV \
-    (UI_INPUT_MASK_UP | UI_INPUT_BIT(KEY_PAGEUP))
-#define UI_INPUT_MASK_CHAPTER_NEXT \
-    (UI_INPUT_MASK_DOWN | UI_INPUT_BIT(KEY_PAGEDOWN))
-#define UI_INPUT_MASK_PAGE_PREV \
-    (UI_INPUT_MASK_LEFT | UI_INPUT_BIT(JOY_L1))
-#define UI_INPUT_MASK_PAGE_NEXT \
-    (UI_INPUT_MASK_RIGHT | UI_INPUT_MASK_CONFIRM | UI_INPUT_BIT(JOY_R1))
 
 typedef struct {
     float shelf_selected_visual;
     int shelf_initialized;
+    int shelf_cover_warmup_active;
     float catalog_progress;
     float settings_progress;
     float catalog_selected_visual;
@@ -212,18 +118,18 @@ typedef struct {
     char ca_file[512];
     char qr_path[1024];
     AuthSession session;
-    int running;
-    int success;
-    int failed;
+    atomic_int running;
+    atomic_int success;
+    atomic_int failed;
 } LoginStartState;
 
 typedef struct {
     char data_dir[512];
     char ca_file[512];
     AuthSession session;
-    int running;
-    int completed;
-    int stop;
+    atomic_int running;
+    atomic_int completed;
+    atomic_int stop;
     AuthPollStatus last_status;
 } LoginPollState;
 
@@ -232,8 +138,8 @@ typedef struct {
     char ca_file[512];
     cJSON *shelf_nuxt;
     int session_ok;
-    int running;
-    int completed;
+    atomic_int running;
+    atomic_int completed;
     int poor_network;
 } StartupState;
 
@@ -249,6 +155,10 @@ typedef struct {
 typedef struct {
     ShelfCoverEntry *entries;
     int count;
+    int last_trim_selected;
+    int last_trim_visible_start;
+    int last_trim_visible_end;
+    int last_trim_keep_radius;
     ShelfCoverEntry article_entry;
     int has_article_entry;
 } ShelfCoverCache;
@@ -258,9 +168,9 @@ typedef struct {
     char ca_file[512];
     char cover_url[2048];
     char cache_path[1024];
-    int running;
-    int ready;
-    int failed;
+    atomic_int running;
+    atomic_int ready;
+    atomic_int failed;
     int entry_index;
 } ShelfCoverDownloadState;
 
@@ -300,9 +210,9 @@ typedef struct {
     int initial_page;
     int initial_offset;
     int honor_saved_position;
-    int running;
-    int ready;
-    int failed;
+    atomic_int running;
+    atomic_int ready;
+    atomic_int failed;
     int poor_network;
     ReaderDocument doc;
 } ReaderOpenState;
@@ -317,7 +227,7 @@ typedef struct {
     int reading_seconds;
     int compute_progress;
     char page_summary[128];
-    int running;
+    atomic_int running;
     int result;
 } ProgressReportState;
 
@@ -326,9 +236,9 @@ typedef struct {
     char ca_file[512];
     char target[2048];
     int font_size;
-    int running;
-    int ready;
-    int failed;
+    atomic_int running;
+    atomic_int ready;
+    atomic_int failed;
     ReaderDocument doc;
 } ChapterPrefetchState;
 
@@ -350,9 +260,9 @@ typedef struct {
     int direction;
     int range_start;
     int range_end;
-    int running;
-    int ready;
-    int failed;
+    atomic_int running;
+    atomic_int ready;
+    atomic_int failed;
     int item_count;
     int last_requested_direction;
     ReaderCatalogItem *items;
@@ -393,10 +303,17 @@ enum {
     UI_READER_CONTENT_WIDTH = 912,
     UI_READER_CONTENT_HEIGHT = 640,
     UI_SHELF_COVER_TEXTURE_KEEP_RADIUS = 4,
-    UI_SHELF_COVER_DOWNLOAD_RADIUS = 3,
+    UI_SHELF_COVER_DOWNLOAD_RADIUS = 8,
+    UI_SHELF_COVER_PREPARE_AHEAD_RADIUS = 6,
+    UI_SHELF_COVER_PREPARE_IDLE_LIMIT = 3,
+    UI_SHELF_COVER_PREPARE_ANIM_LIMIT = 1,
     UI_INPUT_REPEAT_DELAY_MS = 280,
-    UI_PAGE_REPEAT_DELAY_MS = 340,
-    UI_INPUT_REPEAT_INTERVAL_MS = 85,
+    UI_SHELF_REPEAT_DELAY_MS = 340,
+    UI_READER_PAGE_REPEAT_DELAY_MS = 480,
+    UI_INPUT_REPEAT_INTERVAL_MS = 120,
+    UI_SHELF_REPEAT_INTERVAL_MS = 140,
+    UI_READER_PAGE_REPEAT_INTERVAL_MS = 260,
+    UI_MOTION_DT_CAP_MS = 50,
     UI_FRAME_INTERVAL_ACTIVE_MS = 33,
     UI_FRAME_INTERVAL_LOADING_MS = 100,
     UI_FRAME_INTERVAL_READER_IDLE_MS = 180,
@@ -483,16 +400,6 @@ int ui_event_is_shelf_resume(const SDL_Event *event, int tg5040_input,
                              const UiInputSuppression *suppression);
 int ui_event_is_catalog_toggle(const SDL_Event *event, int tg5040_input,
                                const UiInputSuppression *suppression);
-int ui_event_is_rotate(const SDL_Event *event, int tg5040_input,
-                       const UiInputSuppression *suppression);
-int ui_event_is_rotate_combo(const SDL_Event *event, int tg5040_input, int select_pressed,
-                             int start_pressed, const UiInputSuppression *suppression);
-int ui_event_is_dark_mode_toggle(const SDL_Event *event, int tg5040_input,
-                                 int select_pressed, const UiInputSuppression *suppression);
-int ui_event_is_brightness_up(const SDL_Event *event, int tg5040_input, int start_pressed,
-                              const UiInputSuppression *suppression);
-int ui_event_is_brightness_down(const SDL_Event *event, int tg5040_input, int start_pressed,
-                                const UiInputSuppression *suppression);
 int ui_event_is_lock_button(const SDL_Event *event, const UiInputSuppression *suppression);
 int ui_event_is_chapter_prev(const SDL_Event *event, int tg5040_input,
                              const UiInputSuppression *suppression);
@@ -529,11 +436,372 @@ int ui_input_is_page_prev_held(int tg5040_input, SDL_Joystick **joysticks, int j
                                const UiInputSuppression *suppression);
 int ui_input_is_page_next_held(int tg5040_input, SDL_Joystick **joysticks, int joystick_count,
                                const UiInputSuppression *suppression);
-UiRepeatAction ui_repeat_action_current(UiView view, const ReaderViewState *reader_state,
-                                        UiInputMask observed_input_mask,
-                                        int tg5040_input, SDL_Joystick **joysticks,
-                                        int joystick_count,
+UiInputMask ui_input_event_mask(const SDL_Event *event, int tg5040_input);
+UiInputCommand ui_input_command_for_event(const SDL_Event *event, int tg5040_input,
+                                          const UiInputSuppression *suppression);
+UiInputAction ui_input_action_for_event(UiInputScope scope, const SDL_Event *event,
+                                        int tg5040_input,
                                         const UiInputSuppression *suppression);
+UiInputAction ui_input_repeat_action_current(UiInputScope scope, int tg5040_input,
+                                             SDL_Joystick **joysticks,
+                                             int joystick_count,
+                                             const UiInputSuppression *suppression);
+
+/* ====================== ui_view_input.c ====================== */
+
+typedef struct {
+    ApiContext *ctx;
+    UiView *view;
+    UiHapticState *haptic_state;
+    SettingsFlowState *settings_state;
+    ReaderOpenState *reader_open;
+    SDL_Thread **reader_open_thread_handle;
+    AuthSession *session;
+    cJSON *shelf_nuxt;
+    cJSON **shelf_nuxt_ref;
+    ShelfCoverCache *shelf_covers;
+    ShelfCoverDownloadState *shelf_cover_download;
+    SDL_Thread **shelf_cover_download_thread_handle;
+    int *selected;
+    int *login_active;
+    int *preferred_reader_font_size;
+    int *brightness_level;
+    int tg5040_input;
+    const UiInputSuppression *input_suppression;
+    char *loading_title;
+    size_t loading_title_size;
+    char *status;
+    size_t status_size;
+    char *shelf_status;
+    size_t shelf_status_size;
+    SDL_Renderer *renderer;
+    SDL_Texture **scene_texture;
+    UiMotionState *motion_state;
+    ReaderViewState *reader_state;
+    UiLayout *current_layout;
+    ChapterPrefetchCache *chapter_prefetch_cache;
+    TTF_Font *body_font;
+    UiRotation *rotation;
+    SDL_Texture **qr_texture;
+    Uint32 *exit_confirm_until;
+    Uint32 *reader_exit_confirm_until;
+} UiViewInputContext;
+
+typedef struct {
+    UiRepeatState *repeat_state;
+    UiInputSuppression *input_suppression;
+    UiInputState *input_state;
+    int tg5040_input;
+    SDL_Joystick **joysticks;
+    int joystick_count;
+    Uint32 *exit_confirm_until;
+    Uint32 *reader_exit_confirm_until;
+} UiInputTransitionContext;
+
+typedef struct {
+    ApiContext *ctx;
+    SDL_Renderer *renderer;
+    SDL_Texture **scene_texture;
+    UiLayout *current_layout;
+    UiView *view;
+    SettingsFlowState *settings_state;
+    ReaderViewState *reader_state;
+    ReaderOpenState *reader_open;
+    LoginPollState *login_poll;
+    AuthSession *session;
+    int *login_active;
+    int *running;
+    int tg5040_input;
+    int *brightness_level;
+    UiHapticState *haptic_state;
+    UiRepeatState *repeat_state;
+    UiMotionState *motion_state;
+    int *tg5040_select_pressed;
+    int *tg5040_start_pressed;
+    Uint32 *lock_button_ignore_until;
+    Uint32 *last_lock_trigger_tick;
+    Uint32 *exit_confirm_until;
+    Uint32 *reader_exit_confirm_until;
+    cJSON **shelf_nuxt;
+    ShelfCoverCache *shelf_covers;
+    ShelfCoverDownloadState *shelf_cover_download;
+    SDL_Thread **shelf_cover_download_thread_handle;
+    SDL_Texture **qr_texture;
+    int *selected;
+    char *status;
+    size_t status_size;
+    int *render_requested;
+} UiGlobalInputContext;
+
+int ui_view_input_reader_doc_target_changed(const char *before, const ReaderViewState *state);
+int ui_view_input_should_skip_transition_for_page_turn(UiInputAction action,
+                                                       UiView event_view_before,
+                                                       UiView current_view,
+                                                       int event_catalog_before,
+                                                       const ReaderViewState *reader_state,
+                                                       const char *event_reader_target_before);
+void ui_view_input_apply_repeat_action(UiInputAction action, ApiContext *ctx,
+                                       TTF_Font *body_font, ReaderViewState *reader_state,
+                                       UiMotionState *motion_state, cJSON *shelf_nuxt,
+                                       int *selected, char *shelf_status,
+                                       size_t shelf_status_size,
+                                       const UiLayout *current_layout,
+                                       ChapterPrefetchCache *chapter_prefetch_cache);
+void ui_handle_login_view_action(ApiContext *ctx, UiInputAction action,
+                                 LoginStartState *login_start,
+                                 SDL_Thread **login_thread_handle, UiView *view,
+                                 int *login_active, char *status, size_t status_size,
+                                 SDL_Texture **qr_texture, const char *qr_path,
+                                 UiHapticState *haptic_state);
+void ui_handle_bootstrap_view_action(ApiContext *ctx, UiInputAction action,
+                                     StartupState *startup_state,
+                                     SDL_Thread **startup_thread_handle,
+                                     char *loading_title, size_t loading_title_size,
+                                     char *status, size_t status_size,
+                                     UiHapticState *haptic_state);
+void ui_handle_opening_view_action(ApiContext *ctx, UiInputAction action,
+                                   ReaderOpenState *reader_open,
+                                   SDL_Thread **reader_open_thread_handle,
+                                   char *status, size_t status_size,
+                                   UiHapticState *haptic_state);
+int ui_handle_settings_view_action(UiViewInputContext *context, UiInputAction action,
+                                   int *render_requested);
+void ui_handle_shelf_view_action(UiViewInputContext *context, UiInputAction action,
+                                 int *render_requested);
+void ui_handle_reader_view_action(UiViewInputContext *context, UiInputAction action,
+                                  int *render_requested);
+void ui_handle_login_view_event(ApiContext *ctx, const SDL_Event *event, int tg5040_input,
+                                const UiInputSuppression *input_suppression,
+                                LoginStartState *login_start,
+                                SDL_Thread **login_thread_handle, UiView *view,
+                                int *login_active, char *status, size_t status_size,
+                                SDL_Texture **qr_texture, const char *qr_path,
+                                UiHapticState *haptic_state);
+void ui_handle_bootstrap_view_event(ApiContext *ctx, const SDL_Event *event, int tg5040_input,
+                                    const UiInputSuppression *input_suppression,
+                                    StartupState *startup_state,
+                                    SDL_Thread **startup_thread_handle,
+                                    char *loading_title, size_t loading_title_size,
+                                    char *status, size_t status_size,
+                                    UiHapticState *haptic_state);
+void ui_handle_opening_view_event(ApiContext *ctx, const SDL_Event *event, int tg5040_input,
+                                  const UiInputSuppression *input_suppression,
+                                  ReaderOpenState *reader_open,
+                                  SDL_Thread **reader_open_thread_handle,
+                                  char *status, size_t status_size,
+                                  UiHapticState *haptic_state);
+int ui_handle_settings_view_event(UiViewInputContext *context, const SDL_Event *event,
+                                  int *render_requested);
+void ui_handle_shelf_view_event(UiViewInputContext *context, const SDL_Event *event,
+                                int *render_requested);
+void ui_handle_reader_view_event(UiViewInputContext *context, const SDL_Event *event,
+                                 int *render_requested);
+
+/* ====================== ui_render.c ====================== */
+
+int ui_dark_mode_enabled(void);
+void ui_dark_mode_set(int enabled);
+int shelf_ui_default_selection(cJSON *nuxt);
+int shelf_ui_clamp_selection(cJSON *nuxt, int selected);
+int shelf_ui_cover_cache_index_with_counts(int article_count, int book_count, int selected);
+int shelf_ui_cover_cache_index(cJSON *nuxt, int selected);
+int ui_present_scene(SDL_Renderer *renderer, SDL_Texture *scene, UiRotation rotation,
+                     Uint8 alpha);
+const char *ui_rotation_label(UiRotation rotation);
+int ui_settings_effective_font_size(const SettingsFlowState *settings_state,
+                                    const ReaderViewState *reader_state,
+                                    int preferred_reader_font_size);
+void render_confirm_hint(SDL_Renderer *renderer, TTF_Font *body_font,
+                         Uint32 hint_until, const char *msg, const UiLayout *layout);
+void render_login(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
+                  AuthSession *session, const char *status, const char *battery_text,
+                  const UiLayout *layout,
+                  SDL_Texture **qr_texture, int *qr_w, int *qr_h);
+void render_poor_network_toast(SDL_Renderer *renderer, TTF_Font *body_font,
+                               Uint32 toast_until, const UiLayout *layout);
+void render_loading(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
+                    const char *title, const char *status, const char *battery_text,
+                    const UiLayout *layout);
+void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
+                  ApiContext *ctx, cJSON *nuxt, ShelfCoverCache *cover_cache,
+                  int selected, float selected_pos, int start,
+                  const char *status, const char *battery_text, const UiLayout *layout);
+void render_reader(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
+                   ReaderViewState *state, const char *battery_text,
+                   const UiLayout *layout);
+void render_settings(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
+                     const SettingsFlowState *settings_state,
+                     const UiUserProfile *user_profile,
+                     const ReaderViewState *reader_state,
+                     int preferred_reader_font_size, int brightness_level,
+                     UiRotation rotation, const char *status,
+                     const char *battery_text, const UiLayout *layout,
+                     float progress);
+void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
+                            ReaderViewState *state, float progress, float selected_pos,
+                            const UiLayout *layout);
+
+/* ====================== ui_assets.c ====================== */
+
+void shelf_cover_cache_reset(ShelfCoverCache *cache);
+int shelf_cover_prepare_nearby(ApiContext *ctx, SDL_Renderer *renderer,
+                               cJSON *nuxt, ShelfCoverCache *cache,
+                               float selected_pos, int selected,
+                               int direction, int max_prepare);
+void shelf_cover_cache_build(ApiContext *ctx, cJSON *nuxt, ShelfCoverCache *cache);
+void ui_user_profile_clear(UiUserProfile *profile);
+void ui_user_profile_sync(UiUserProfile *profile, cJSON *shelf_nuxt,
+                          const char *data_dir);
+void ui_user_profile_prepare_avatar_texture(ApiContext *ctx, SDL_Renderer *renderer,
+                                            UiUserProfile *profile);
+
+/* ====================== ui_input_dispatch.c ====================== */
+
+UiInputTransitionContext ui_make_input_transition_context(
+    UiRepeatState *repeat_state,
+    UiInputSuppression *input_suppression,
+    UiInputState *input_state,
+    int tg5040_input,
+    SDL_Joystick **joysticks,
+    int joystick_count,
+    Uint32 *exit_confirm_until,
+    Uint32 *reader_exit_confirm_until);
+UiGlobalInputContext ui_make_global_input_context(
+    ApiContext *ctx,
+    SDL_Renderer *renderer,
+    SDL_Texture **scene_texture,
+    UiLayout *current_layout,
+    UiView *view,
+    SettingsFlowState *settings_state,
+    ReaderViewState *reader_state,
+    ReaderOpenState *reader_open,
+    LoginPollState *login_poll,
+    AuthSession *session,
+    int *login_active,
+    int *running,
+    int tg5040_input,
+    int *brightness_level,
+    UiHapticState *haptic_state,
+    UiRepeatState *repeat_state,
+    UiMotionState *motion_state,
+    int *tg5040_select_pressed,
+    int *tg5040_start_pressed,
+    Uint32 *lock_button_ignore_until,
+    Uint32 *last_lock_trigger_tick,
+    Uint32 *exit_confirm_until,
+    Uint32 *reader_exit_confirm_until,
+    cJSON **shelf_nuxt,
+    ShelfCoverCache *shelf_covers,
+    ShelfCoverDownloadState *shelf_cover_download,
+    SDL_Thread **shelf_cover_download_thread_handle,
+    SDL_Texture **qr_texture,
+    int *selected,
+    char *status,
+    size_t status_size,
+    int *render_requested);
+void ui_start_input_transition(UiInputTransitionContext *context);
+int ui_should_begin_input_transition_after_action(UiInputAction action,
+                                                 UiView event_view_before,
+                                                 UiView current_view,
+                                                 int event_catalog_before,
+                                                 const ReaderViewState *reader_state,
+                                                 const char *event_reader_target_before);
+int ui_should_begin_input_transition_after_repeat(UiInputAction repeat_action,
+                                                  const char *reader_target_before,
+                                                  const ReaderViewState *reader_state);
+int ui_should_begin_input_transition_after_frame(UiView frame_view_before,
+                                                 UiView current_view,
+                                                 int catalog_before,
+                                                 const ReaderViewState *reader_state,
+                                                 const char *frame_reader_target_before);
+UiViewInputContext ui_make_view_input_context(ApiContext *ctx, UiView *view,
+                                              UiHapticState *haptic_state,
+                                              SettingsFlowState *settings_state,
+                                              ReaderViewState *reader_state,
+                                              ReaderOpenState *reader_open,
+                                              SDL_Thread **reader_open_thread_handle,
+                                              cJSON *shelf_nuxt, int *selected,
+                                              int tg5040_input,
+                                              const UiInputSuppression *input_suppression,
+                                              char *loading_title,
+                                              size_t loading_title_size,
+                                              char *status, size_t status_size,
+                                              char *shelf_status,
+                                              size_t shelf_status_size,
+                                              Uint32 *exit_confirm_until,
+                                              Uint32 *reader_exit_confirm_until);
+UiViewInputContext ui_make_shelf_view_input_context(ApiContext *ctx, UiView *view,
+                                                    UiHapticState *haptic_state,
+                                                    UiMotionState *motion_state,
+                                                    UiLayout *current_layout,
+                                                    SettingsFlowState *settings_state,
+                                                    ReaderViewState *reader_state,
+                                                    ReaderOpenState *reader_open,
+                                                    SDL_Thread **reader_open_thread_handle,
+                                                    ChapterPrefetchCache *chapter_prefetch_cache,
+                                                    cJSON *shelf_nuxt, int *selected,
+                                                    int tg5040_input,
+                                                    const UiInputSuppression *input_suppression,
+                                                    char *loading_title,
+                                                    size_t loading_title_size,
+                                                    char *status, size_t status_size,
+                                                    char *shelf_status,
+                                                    size_t shelf_status_size,
+                                                    Uint32 *exit_confirm_until,
+                                                    Uint32 *reader_exit_confirm_until,
+                                                    TTF_Font *body_font);
+UiViewInputContext ui_make_reader_view_input_context(ApiContext *ctx, UiView *view,
+                                                     UiHapticState *haptic_state,
+                                                     UiMotionState *motion_state,
+                                                     UiLayout *current_layout,
+                                                     SettingsFlowState *settings_state,
+                                                     ReaderViewState *reader_state,
+                                                     ReaderOpenState *reader_open,
+                                                     SDL_Thread **reader_open_thread_handle,
+                                                     ChapterPrefetchCache *chapter_prefetch_cache,
+                                                     cJSON *shelf_nuxt, int *selected,
+                                                     int tg5040_input,
+                                                     const UiInputSuppression *input_suppression,
+                                                     char *loading_title,
+                                                     size_t loading_title_size,
+                                                     char *status, size_t status_size,
+                                                     char *shelf_status,
+                                                     size_t shelf_status_size,
+                                                     Uint32 *exit_confirm_until,
+                                                     Uint32 *reader_exit_confirm_until,
+                                                     TTF_Font *body_font);
+UiViewInputContext ui_make_settings_view_input_context(
+    ApiContext *ctx,
+    UiView *view,
+    UiHapticState *haptic_state,
+    SettingsFlowState *settings_state,
+    ReaderViewState *reader_state,
+    AuthSession *session,
+    cJSON *shelf_nuxt,
+    cJSON **shelf_nuxt_ref,
+    ShelfCoverCache *shelf_covers,
+    ShelfCoverDownloadState *shelf_cover_download,
+    SDL_Thread **shelf_cover_download_thread_handle,
+    int *selected,
+    int *login_active,
+    int *preferred_reader_font_size,
+    int *brightness_level,
+    int tg5040_input,
+    const UiInputSuppression *input_suppression,
+    char *status,
+    size_t status_size,
+    char *shelf_status,
+    size_t shelf_status_size,
+    SDL_Renderer *renderer,
+    SDL_Texture **scene_texture,
+    UiLayout *current_layout,
+    TTF_Font *body_font,
+    UiRotation *rotation,
+    SDL_Texture **qr_texture,
+    Uint32 *exit_confirm_until,
+    Uint32 *reader_exit_confirm_until);
+int ui_handle_global_action(UiGlobalInputContext *context, UiInputAction action,
+                            Uint32 frame_now);
 
 /* ====================== ui_text.c ====================== */
 
@@ -549,8 +817,31 @@ const char *skip_line_start_spacing(const char *text, const char *end);
 
 /* ====================== ui.c ====================== */
 
+UiLayout ui_layout_for_rotation(UiRotation rotation);
 int ui_recreate_scene_texture(SDL_Renderer *renderer, SDL_Texture **scene_texture,
                               const UiLayout *layout);
+void ui_force_exit_from_login(UiHapticState *haptic_state);
+void ui_settings_clear_logout_confirm(SettingsFlowState *settings_state);
+const char *ui_logout_status_text(SessionLogoutOutcome outcome);
+void ui_transition_to_login_required(UiView *view, AuthSession *session, int *login_active,
+                                     SettingsFlowState *settings_state,
+                                     ReaderViewState *reader_state, cJSON **shelf_nuxt,
+                                     ShelfCoverCache *shelf_covers,
+                                     ShelfCoverDownloadState *cover_download_state,
+                                     SDL_Thread **cover_download_thread_handle,
+                                     SDL_Texture **qr_texture, int *selected,
+                                     Uint32 *exit_confirm_until,
+                                     Uint32 *reader_exit_confirm_until,
+                                     char *status, size_t status_size,
+                                     const char *message);
+int ui_settings_apply(SettingsFlowState *settings_state, ApiContext *ctx,
+                      SDL_Renderer *renderer, TTF_Font *body_font,
+                      ReaderViewState *reader_state,
+                      int *preferred_reader_font_size,
+                      int tg5040_input, int *brightness_level, UiRotation *rotation,
+                      UiLayout *current_layout, SDL_Texture **scene_texture,
+                      char *status, size_t status_size, int direction);
+int ui_runtime_exec(ApiContext *ctx, const char *font_path, const char *platform);
 
 /* ====================== ui_reader_view.c ====================== */
 
@@ -612,9 +903,11 @@ void ui_startup_login_shutdown(LoginPollState *login_poll, SDL_Thread **login_th
 /* ====================== ui_flow_shelf.c ====================== */
 
 void ui_shelf_flow_cover_download_state_reset(ShelfCoverDownloadState *state);
-void ui_shelf_flow_cover_download_maybe_start(ApiContext *ctx, ShelfCoverCache *cache,
+void ui_shelf_flow_cover_download_maybe_start(ApiContext *ctx, cJSON *shelf_nuxt,
+                                              ShelfCoverCache *cache,
                                               ShelfCoverDownloadState *state,
-                                              SDL_Thread **thread_handle, int selected);
+                                              SDL_Thread **thread_handle,
+                                              int selected, int direction);
 void ui_shelf_flow_cover_download_poll(ShelfCoverCache *cache,
                                        ShelfCoverDownloadState *state,
                                        SDL_Thread **thread_handle);
@@ -660,6 +953,7 @@ void ui_reader_flow_poll_background(ChapterPrefetchCache *chapter_prefetch_cache
                                     CatalogHydrationState *catalog_hydration,
                                     SDL_Thread **catalog_hydration_thread_handle,
                                     ReaderViewState *reader_state);
+void ui_reader_view_mark_progress_session_expired(ReaderViewState *state);
 void ui_reader_flow_begin_reader_open(ApiContext *ctx, ReaderOpenState *reader_open,
                                       SDL_Thread **reader_open_thread_handle,
                                       const char *source_target, const char *book_id,

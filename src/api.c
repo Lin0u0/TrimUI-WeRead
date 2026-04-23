@@ -3,10 +3,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include "api.h"
+
+static long now_ms(void) {
+    struct timeval tv;
+
+    if (gettimeofday(&tv, NULL) != 0) {
+        return 0;
+    }
+    return tv.tv_sec * 1000L + tv.tv_usec / 1000L;
+}
 
 static int is_transient_error(CURLcode code) {
     return code == CURLE_OPERATION_TIMEDOUT ||
@@ -89,6 +99,11 @@ void api_cleanup(ApiContext *ctx) {
 static void setup_curl(ApiContext *ctx, const char *url, const char *user_agent, Buffer *buf,
                        long timeout_seconds) {
     CURL *c = ctx->curl;
+    long connect_timeout = timeout_seconds < 5 ? timeout_seconds : 5;
+
+    if (connect_timeout < 1) {
+        connect_timeout = 1;
+    }
     curl_easy_reset(c);
     curl_easy_setopt(c, CURLOPT_URL, url);
     curl_easy_setopt(c, CURLOPT_USERAGENT, user_agent ? user_agent : KINDLE_USER_AGENT);
@@ -99,6 +114,7 @@ static void setup_curl(ApiContext *ctx, const char *url, const char *user_agent,
     curl_easy_setopt(c, CURLOPT_COOKIEJAR, ctx->cookie_file);
     curl_easy_setopt(c, CURLOPT_ERRORBUFFER, ctx->error_buf);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, timeout_seconds);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, connect_timeout);
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
     if (ctx->ca_file[0]) {
         curl_easy_setopt(c, CURLOPT_CAINFO, ctx->ca_file);
@@ -106,28 +122,42 @@ static void setup_curl(ApiContext *ctx, const char *url, const char *user_agent,
     curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, "");
 }
 
-static int api_get_ua_internal(ApiContext *ctx, const char *url, const char *user_agent,
-                               Buffer *buf, long timeout_seconds) {
+static int api_get_ua_internal_with_retry(ApiContext *ctx, const char *url,
+                                          const char *user_agent, Buffer *buf,
+                                          long timeout_seconds, int allow_retry) {
     long retry_timeout = timeout_seconds < 10 ? timeout_seconds : 10;
+    int max_attempt = allow_retry ? 1 : 0;
 
-    for (int attempt = 0; attempt <= 1; attempt++) {
+    for (int attempt = 0; attempt <= max_attempt; attempt++) {
+        long start_ms;
+        long elapsed_ms;
+
         buf_init(buf);
         setup_curl(ctx, url, user_agent, buf, attempt == 0 ? timeout_seconds : retry_timeout);
+        start_ms = now_ms();
         ctx->last_curl_code = curl_easy_perform(ctx->curl);
+        elapsed_ms = now_ms() - start_ms;
         CURLcode res = ctx->last_curl_code;
 
         if (res == CURLE_OK) {
             long code;
             curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &code);
             if (code >= 200 && code < 400) {
+                if (elapsed_ms >= 1000) {
+                    fprintf(stderr, "GET %s ok in %ldms bytes=%zu attempt=%d\n",
+                            url, elapsed_ms, buf->size, attempt + 1);
+                }
                 return 0;
             }
-            fprintf(stderr, "GET %s returned %ld\n", url, code);
+            fprintf(stderr, "GET %s returned %ld in %ldms attempt=%d\n",
+                    url, code, elapsed_ms, attempt + 1);
             api_buffer_free(buf);
             return -1;
         }
 
-        if (attempt == 0 && is_transient_error(res)) {
+        if (allow_retry && attempt == 0 && is_transient_error(res)) {
+            fprintf(stderr, "GET %s transient %d in %ldms attempt=%d; retrying\n",
+                    url, (int)res, elapsed_ms, attempt + 1);
             api_buffer_free(buf);
             sleep(1);
             continue;
@@ -136,17 +166,33 @@ static int api_get_ua_internal(ApiContext *ctx, const char *url, const char *use
         if (is_transient_error(res) || res == CURLE_OPERATION_TIMEDOUT) {
             ctx->poor_network = 1;
         }
-        if (res != CURLE_OPERATION_TIMEDOUT) {
-            fprintf(stderr, "GET %s failed: %s\n", url, ctx->error_buf);
-        }
+        fprintf(stderr, "GET %s failed: %s code=%d in %ldms attempt=%d\n",
+                url,
+                ctx->error_buf[0] ? ctx->error_buf : curl_easy_strerror(res),
+                (int)res, elapsed_ms, attempt + 1);
         api_buffer_free(buf);
         return -1;
     }
     return -1;
 }
 
+static int api_get_ua_internal(ApiContext *ctx, const char *url, const char *user_agent,
+                               Buffer *buf, long timeout_seconds) {
+    return api_get_ua_internal_with_retry(ctx, url, user_agent, buf,
+                                          timeout_seconds, 1);
+}
+
 int api_get(ApiContext *ctx, const char *url, Buffer *buf) {
     return api_get_ua_internal(ctx, url, KINDLE_USER_AGENT, buf, 30L);
+}
+
+int api_get_timeout(ApiContext *ctx, const char *url, Buffer *buf, long timeout_seconds) {
+    return api_get_ua_internal(ctx, url, KINDLE_USER_AGENT, buf, timeout_seconds);
+}
+
+int api_get_once_timeout(ApiContext *ctx, const char *url, Buffer *buf, long timeout_seconds) {
+    return api_get_ua_internal_with_retry(ctx, url, KINDLE_USER_AGENT, buf,
+                                          timeout_seconds, 0);
 }
 
 int api_get_with_ua(ApiContext *ctx, const char *url, const char *user_agent, Buffer *buf) {

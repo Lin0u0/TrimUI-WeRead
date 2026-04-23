@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include "reader_internal.h"
 #include "json.h"
 
@@ -39,6 +40,154 @@ int reader_join_path_checked(char *dst, size_t dst_size, const char *dir, const 
 
 static int is_js_ident_char(char ch) {
     return isalnum((unsigned char)ch) || ch == '_' || ch == '$';
+}
+
+static int hex_digit_value(char ch) {
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return ch - 'a' + 10;
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return ch - 'A' + 10;
+    }
+    return -1;
+}
+
+static int append_utf8_codepoint(char *dst, size_t dst_size, size_t *len, uint32_t cp) {
+    if (cp <= 0x7F) {
+        if (*len + 1 >= dst_size) {
+            return -1;
+        }
+        dst[(*len)++] = (char)cp;
+        return 0;
+    }
+    if (cp <= 0x7FF) {
+        if (*len + 2 >= dst_size) {
+            return -1;
+        }
+        dst[(*len)++] = (char)(0xC0 | (cp >> 6));
+        dst[(*len)++] = (char)(0x80 | (cp & 0x3F));
+        return 0;
+    }
+    if (cp <= 0xFFFF) {
+        if (*len + 3 >= dst_size) {
+            return -1;
+        }
+        dst[(*len)++] = (char)(0xE0 | (cp >> 12));
+        dst[(*len)++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        dst[(*len)++] = (char)(0x80 | (cp & 0x3F));
+        return 0;
+    }
+    if (cp <= 0x10FFFF) {
+        if (*len + 4 >= dst_size) {
+            return -1;
+        }
+        dst[(*len)++] = (char)(0xF0 | (cp >> 18));
+        dst[(*len)++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        dst[(*len)++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        dst[(*len)++] = (char)(0x80 | (cp & 0x3F));
+        return 0;
+    }
+    return -1;
+}
+
+static char *reader_decode_js_string_literal(const char *literal) {
+    size_t literal_len;
+    size_t out_len = 0;
+    char quote;
+    char *out;
+
+    if (!literal) {
+        return NULL;
+    }
+    literal_len = strlen(literal);
+    if (literal_len < 2) {
+        return NULL;
+    }
+    quote = literal[0];
+    if ((quote != '\'' && quote != '"') || literal[literal_len - 1] != quote) {
+        return NULL;
+    }
+
+    out = malloc(literal_len + 1);
+    if (!out) {
+        return NULL;
+    }
+
+    for (size_t i = 1; i + 1 < literal_len; i++) {
+        char ch = literal[i];
+
+        if (ch != '\\') {
+            out[out_len++] = ch;
+            continue;
+        }
+
+        if (i + 1 >= literal_len - 1) {
+            out[out_len++] = '\\';
+            break;
+        }
+
+        ch = literal[++i];
+        switch (ch) {
+        case '\\':
+        case '\'':
+        case '"':
+        case '/':
+            out[out_len++] = ch;
+            break;
+        case 'b':
+            out[out_len++] = '\b';
+            break;
+        case 'f':
+            out[out_len++] = '\f';
+            break;
+        case 'n':
+            out[out_len++] = '\n';
+            break;
+        case 'r':
+            out[out_len++] = '\r';
+            break;
+        case 't':
+            out[out_len++] = '\t';
+            break;
+        case 'v':
+            out[out_len++] = '\v';
+            break;
+        case 'u': {
+            uint32_t cp = 0;
+            int valid = 1;
+
+            if (i + 4 >= literal_len - 1) {
+                valid = 0;
+            } else {
+                for (int j = 0; j < 4; j++) {
+                    int digit = hex_digit_value(literal[i + 1 + j]);
+                    if (digit < 0) {
+                        valid = 0;
+                        break;
+                    }
+                    cp = (cp << 4) | (uint32_t)digit;
+                }
+            }
+
+            if (valid && append_utf8_codepoint(out, literal_len + 1, &out_len, cp) == 0) {
+                i += 4;
+                break;
+            }
+            out[out_len++] = '\\';
+            out[out_len++] = 'u';
+            break;
+        }
+        default:
+            out[out_len++] = ch;
+            break;
+        }
+    }
+
+    out[out_len] = '\0';
+    return out;
 }
 
 /* ====================== Find Top-Level Field ====================== */
@@ -343,7 +492,10 @@ char *reader_resolve_nuxt_alias_string(const char *html, const char *alias) {
                         resolved = strdup("false");
                     }
                 } else if (literal && *literal) {
-                    resolved = strdup(literal);
+                    resolved = reader_decode_js_string_literal(literal);
+                    if (!resolved) {
+                        resolved = strdup(literal);
+                    }
                 }
                 cJSON_Delete(json);
                 free(literal);
@@ -541,6 +693,250 @@ char *reader_extract_resolved_value_after_marker(const char *html, const char *b
     }
 
     return literal;
+}
+
+char *reader_extract_resolved_value_after_global_marker(const char *html, const char *marker) {
+    const char *end = html ? html + strlen(html) : NULL;
+    const char *field;
+    const char *cursor;
+    char *literal = NULL;
+    char *resolved = NULL;
+    cJSON *json;
+
+    if (!html || !marker || !marker[0]) {
+        return NULL;
+    }
+
+    field = strstr(html, marker);
+    if (!field || !end) {
+        return NULL;
+    }
+    cursor = field + strlen(marker);
+    if (parse_js_literal_for_alias(&cursor, end, &literal) != 0 || !literal) {
+        free(literal);
+        return NULL;
+    }
+
+    json = cJSON_Parse(literal);
+    if (json) {
+        if (cJSON_IsString(json) && json->valuestring) {
+            resolved = strdup(json->valuestring);
+        } else if (cJSON_IsNumber(json)) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%.0f", json->valuedouble);
+            resolved = strdup(buf);
+        } else if (cJSON_IsTrue(json)) {
+            resolved = strdup("true");
+        } else if (cJSON_IsFalse(json)) {
+            resolved = strdup("false");
+        }
+        cJSON_Delete(json);
+    } else {
+        resolved = reader_resolve_nuxt_alias_string(html, literal);
+    }
+
+    free(literal);
+    return resolved;
+}
+
+char *reader_extract_attr_text(const char *html, const char *marker) {
+    const char *start = strstr(html, marker);
+    const char *end;
+
+    if (!start) {
+        return NULL;
+    }
+    start += strlen(marker);
+    end = strchr(start, '<');
+    if (!end || end <= start) {
+        return NULL;
+    }
+    return parser_dup_range(start, end);
+}
+
+int reader_find_named_object_block(const char *html, const char *marker,
+                                   const char **block_start, const char **block_end) {
+    const char *start = strstr(html, marker);
+    const char *end = html + strlen(html);
+
+    if (!start) {
+        return -1;
+    }
+    if (marker[strlen(marker) - 1] == '{') {
+        start = start + strlen(marker) - 1;
+    } else {
+        start = strchr(start, '{');
+        if (!start) {
+            return -1;
+        }
+    }
+    *block_start = start;
+    *block_end = parser_find_matching_pair(start, end, '{', '}');
+    return *block_end ? 0 : -1;
+}
+
+static char *extract_literal_from_slice(const char *slice_start, const char *slice_end,
+                                        const char *field_marker) {
+    const char *value_start;
+    const char *field = reader_find_top_level_field(slice_start, slice_end, field_marker,
+                                                    &value_start);
+    const char *cursor;
+    char *literal = NULL;
+
+    if (!field || field >= slice_end) {
+        return NULL;
+    }
+    cursor = value_start;
+    if (parse_js_literal_for_alias(&cursor, slice_end, &literal) != 0) {
+        free(literal);
+        return NULL;
+    }
+    return literal;
+}
+
+static char *resolve_literal_or_alias(const char *html, const char *literal) {
+    char *resolved = NULL;
+
+    if (!literal || !*literal) {
+        return NULL;
+    }
+    if (literal[0] == '"' || literal[0] == '\'' ||
+        literal[0] == '{' || literal[0] == '[' ||
+        literal[0] == '-' || literal[0] == '.' || isdigit((unsigned char)literal[0]) ||
+        strcmp(literal, "true") == 0 || strcmp(literal, "false") == 0 ||
+        strcmp(literal, "null") == 0) {
+        cJSON *json = cJSON_Parse(literal);
+        if (json) {
+            if (cJSON_IsString(json) && json->valuestring) {
+                resolved = strdup(json->valuestring);
+            } else if (cJSON_IsNumber(json)) {
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%.0f", json->valuedouble);
+                resolved = strdup(buf);
+            } else if (cJSON_IsTrue(json)) {
+                resolved = strdup("true");
+            } else if (cJSON_IsFalse(json)) {
+                resolved = strdup("false");
+            }
+            cJSON_Delete(json);
+        }
+    } else {
+        resolved = reader_resolve_nuxt_alias_string(html, literal);
+    }
+    return resolved;
+}
+
+char *reader_extract_resolved_from_slice(const char *html, const char *slice_start,
+                                         const char *slice_end, const char *field_marker) {
+    char *literal = extract_literal_from_slice(slice_start, slice_end, field_marker);
+    char *resolved = resolve_literal_or_alias(html, literal);
+    free(literal);
+    return resolved;
+}
+
+char *reader_extract_resolved_value_in_object_block(const char *html, const char *block_marker,
+                                                    const char *field_marker) {
+    const char *block_start;
+    const char *block_end;
+
+    if (reader_find_named_object_block(html, block_marker, &block_start, &block_end) != 0) {
+        return NULL;
+    }
+    return reader_extract_resolved_from_slice(html, block_start, block_end, field_marker);
+}
+
+int reader_extract_int_in_object_block(const char *html, const char *block_marker,
+                                       const char *field_marker, int fallback) {
+    char *value = reader_extract_resolved_value_in_object_block(html, block_marker, field_marker);
+    int result = fallback;
+
+    if (value) {
+        result = atoi(value);
+    }
+    free(value);
+    return result;
+}
+
+int reader_extract_int_from_slice_resolved(const char *html, const char *slice_start,
+                                           const char *slice_end, const char *field_marker,
+                                           int fallback) {
+    char *value = reader_extract_resolved_from_slice(html, slice_start, slice_end, field_marker);
+    int result = fallback;
+
+    if (value) {
+        result = atoi(value);
+    }
+    free(value);
+    return result;
+}
+
+int reader_parse_bool_from_slice_resolved(const char *html, const char *slice_start,
+                                          const char *slice_end, const char *field_marker,
+                                          int fallback) {
+    char *value = reader_extract_resolved_from_slice(html, slice_start, slice_end, field_marker);
+    int result = fallback;
+
+    if (value) {
+        if (strcmp(value, "true") == 0) {
+            result = 1;
+        } else if (strcmp(value, "false") == 0) {
+            result = 0;
+        } else {
+            result = atoi(value) != 0;
+        }
+    }
+    free(value);
+    return result;
+}
+
+int reader_extract_max_wco(const char *html) {
+    const char *p = html;
+    int max_wco = 0;
+
+    while ((p = strstr(p, "wco=\"")) != NULL) {
+        int value = atoi(p + 5);
+        if (value > max_wco) {
+            max_wco = value;
+        }
+        p += 5;
+    }
+
+    return max_wco;
+}
+
+int reader_extract_wco_values(const char *html, int **values_out, int *count_out) {
+    const char *p = html;
+    int *values = NULL;
+    int count = 0;
+    int cap = 0;
+
+    if (!html || !values_out || !count_out) {
+        return -1;
+    }
+
+    while ((p = strstr(p, "wco=\"")) != NULL) {
+        int value = atoi(p + 5);
+        if (value > 0) {
+            if (count == 0 || values[count - 1] != value) {
+                if (count >= cap) {
+                    int new_cap = cap > 0 ? cap * 2 : 64;
+                    int *tmp = realloc(values, sizeof(int) * new_cap);
+                    if (!tmp) {
+                        free(values);
+                        return -1;
+                    }
+                    values = tmp;
+                    cap = new_cap;
+                }
+                values[count++] = value;
+            }
+        }
+        p += 5;
+    }
+
+    *values_out = values;
+    *count_out = count;
+    return 0;
 }
 
 void reader_add_chapter_uid_field(cJSON *payload, const char *chapter_uid) {

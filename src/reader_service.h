@@ -18,7 +18,14 @@ typedef struct {
                                  const char *chapter_uid, int chapter_idx);
 } ReaderServiceOps;
 
+typedef int (*ReaderServiceReportProgressFn)(ApiContext *ctx, const ReaderDocument *doc,
+                                             int current_page, int total_pages,
+                                             int chapter_offset, int reading_seconds,
+                                             const char *page_summary,
+                                             int compute_progress);
+
 void reader_service_set_test_ops(const ReaderServiceOps *ops);
+void reader_service_set_report_progress_override(ReaderServiceReportProgressFn fn);
 int reader_service_prepare_open_document(ApiContext *ctx, const char *source_target,
                                          const char *book_id_hint, int font_size,
                                          ReaderOpenResult *result);

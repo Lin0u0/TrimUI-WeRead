@@ -1,6 +1,7 @@
 #ifndef SESSION_SERVICE_H
 #define SESSION_SERVICE_H
 
+#include <stdatomic.h>
 #include "auth.h"
 
 typedef int (*SessionServiceValidateSessionFn)(ApiContext *ctx, cJSON **shelf_nuxt_out);
@@ -34,7 +35,7 @@ int session_service_startup_refresh_background(const char *data_dir, const char 
 int session_service_login_start_background(const char *data_dir, const char *ca_file,
                                            AuthSession *session, const char *qr_png_path);
 int session_service_login_poll_background(const char *data_dir, const char *ca_file,
-                                          AuthSession *session, const int *stop,
-                                          int *completed, AuthPollStatus *last_status);
+                                          AuthSession *session, const atomic_int *stop,
+                                          atomic_int *completed, AuthPollStatus *last_status);
 
 #endif

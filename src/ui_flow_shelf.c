@@ -6,6 +6,7 @@
 #if HAVE_SDL
 
 #include <string.h>
+#include "shelf.h"
 #include "shelf_service.h"
 
 static int ui_shelf_flow_cover_download_thread(void *userdata) {
@@ -32,34 +33,61 @@ void ui_shelf_flow_cover_download_state_reset(ShelfCoverDownloadState *state) {
     state->entry_index = -1;
 }
 
-void ui_shelf_flow_cover_download_maybe_start(ApiContext *ctx, ShelfCoverCache *cache,
+void ui_shelf_flow_cover_download_maybe_start(ApiContext *ctx, cJSON *shelf_nuxt,
+                                              ShelfCoverCache *cache,
                                               ShelfCoverDownloadState *state,
-                                              SDL_Thread **thread_handle, int selected) {
-    int min_index;
-    int max_index;
+                                              SDL_Thread **thread_handle,
+                                              int selected, int direction) {
+    int article_count;
+    int book_count;
+    int min_selected;
+    int max_selected;
 
     if (!ctx || !cache || !cache->entries || cache->count <= 0 || !state || !thread_handle ||
         *thread_handle || state->running) {
         return;
     }
 
-    min_index = selected - UI_SHELF_COVER_DOWNLOAD_RADIUS;
-    max_index = selected + UI_SHELF_COVER_DOWNLOAD_RADIUS;
-    if (min_index < 0) {
-        min_index = 0;
+    if (shelf_nuxt) {
+        article_count = shelf_article_count(shelf_nuxt);
+        book_count = shelf_normal_book_count(shelf_nuxt);
+    } else {
+        article_count = 0;
+        book_count = cache->count;
     }
-    if (max_index >= cache->count) {
-        max_index = cache->count - 1;
+    min_selected = article_count > 0 ? -article_count : 0;
+    max_selected = book_count > 0 ? book_count - 1 : -1;
+    if (max_selected < min_selected) {
+        return;
+    }
+    if (selected < min_selected) {
+        selected = min_selected;
+    } else if (selected > max_selected) {
+        selected = max_selected;
+    }
+    if (direction > 0) {
+        direction = 1;
+    } else if (direction < 0) {
+        direction = -1;
     }
 
     for (int distance = 0; distance <= UI_SHELF_COVER_DOWNLOAD_RADIUS; distance++) {
-        int candidates[2] = { selected + distance, selected - distance };
+        int candidates[2] = {
+            selected + (direction >= 0 ? distance : -distance),
+            selected + (direction >= 0 ? -distance : distance)
+        };
 
         for (int pass = 0; pass < (distance == 0 ? 1 : 2); pass++) {
-            int index = candidates[pass];
+            int logical_index = candidates[pass];
+            int index;
             ShelfCoverEntry *entry;
 
-            if (index < min_index || index > max_index) {
+            if (logical_index < min_selected || logical_index > max_selected) {
+                continue;
+            }
+            index = shelf_ui_cover_cache_index_with_counts(
+                article_count, book_count, logical_index);
+            if (index < 0 || index >= cache->count) {
                 continue;
             }
             entry = &cache->entries[index];
@@ -107,8 +135,12 @@ void ui_shelf_flow_cover_download_poll(ShelfCoverCache *cache,
         entry = &cache->entries[state->entry_index];
     }
     if (entry) {
-        entry->attempted = 0;
-        entry->download_failed = state->ready ? 0 : 1;
+        if (state->ready) {
+            entry->download_failed = 0;
+        } else {
+            entry->attempted = 0;
+            entry->download_failed = 1;
+        }
     }
 
     ui_shelf_flow_cover_download_state_reset(state);

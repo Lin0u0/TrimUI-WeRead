@@ -41,6 +41,16 @@ require_file() {
   fi
 }
 
+require_executable() {
+  local path="$1"
+  local rel="$2"
+
+  if [[ ! -x "$path" ]]; then
+    echo "missing executable bit: $rel" >&2
+    exit 1
+  fi
+}
+
 require_text() {
   local path="$1"
   local needle="$2"
@@ -120,6 +130,8 @@ main() {
     require_file "$tmpdir" "Tools/tg5040/WeRead.pak/lib/tg5040/libgcc_s.so.1"
     require_file "$tmpdir" "Tools/tg5040/WeRead.pak/pak.json"
     require_file "$tmpdir" "Tools/tg5040/.media/WeRead.png"
+    require_executable "$launch_path" "Tools/tg5040/WeRead.pak/launch.sh"
+    require_executable "$binary_path" "Tools/tg5040/WeRead.pak/bin/tg5040/weread"
     require_text "$launch_path" 'HOME="$SHARED_USERDATA_PATH/$PAK_NAME"'
     require_text "$launch_path" 'PATH="$PAK_DIR/bin/$PLATFORM:$PAK_DIR/bin:$PATH"'
     require_text "$launch_path" 'LD_LIBRARY_PATH="$PAK_DIR/lib/$PLATFORM:$LD_LIBRARY_PATH"'
@@ -136,6 +148,8 @@ main() {
     require_file "$tmpdir" "Apps/WeRead/res/cacert.pem"
     require_file "$tmpdir" "Apps/WeRead/lib/tg5040/libgcc_s.so.1"
     require_file "$tmpdir" "Apps/WeRead/config.json"
+    require_executable "$launch_path" "Apps/WeRead/launch.sh"
+    require_executable "$binary_path" "Apps/WeRead/bin/tg5040/weread"
     require_text "$launch_path" 'DATA_DIR="$SD_ROOT/Data/$APP_NAME"'
     require_text "$launch_path" 'cp "$APP_DIR/bin/tg5040/weread" /tmp/weread'
     require_text "$launch_path" 'chmod +x /tmp/weread'

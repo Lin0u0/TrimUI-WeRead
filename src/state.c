@@ -1,6 +1,8 @@
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "state.h"
 #include "json.h"
 
@@ -26,11 +28,116 @@ static char *state_path(ApiContext *ctx, const char *name) {
     return path;
 }
 
+static int fsync_parent_dir(const char *path) {
+    const char *slash;
+    char *dir_path;
+    int dir_fd;
+    int rc = -1;
+
+    if (!path) {
+        return -1;
+    }
+
+    slash = strrchr(path, '/');
+    if (!slash) {
+        return -1;
+    }
+
+    dir_path = strndup(path, (size_t)(slash - path));
+    if (!dir_path) {
+        return -1;
+    }
+
+    dir_fd = open(dir_path, O_RDONLY);
+    free(dir_path);
+    if (dir_fd < 0) {
+        return -1;
+    }
+
+    if (fsync(dir_fd) == 0) {
+        rc = 0;
+    }
+    close(dir_fd);
+    return rc;
+}
+
+static int write_text_atomic(const char *path, const char *text) {
+    char *tmp_path;
+    size_t tmp_len;
+    size_t text_len;
+    FILE *fp = NULL;
+    int fd = -1;
+    int rc = -1;
+
+    if (!path || !text) {
+        return -1;
+    }
+
+    text_len = strlen(text);
+    tmp_len = strlen(path) + sizeof(".XXXXXX");
+    tmp_path = malloc(tmp_len);
+    if (!tmp_path) {
+        return -1;
+    }
+    snprintf(tmp_path, tmp_len, "%s.XXXXXX", path);
+
+    fd = mkstemp(tmp_path);
+    if (fd < 0) {
+        free(tmp_path);
+        return -1;
+    }
+
+    fp = fdopen(fd, "wb");
+    if (!fp) {
+        close(fd);
+        unlink(tmp_path);
+        free(tmp_path);
+        return -1;
+    }
+    fd = -1;
+
+    if (fwrite(text, 1, text_len, fp) != text_len) {
+        goto cleanup;
+    }
+    if (fflush(fp) != 0) {
+        goto cleanup;
+    }
+    if (fsync(fileno(fp)) != 0) {
+        goto cleanup;
+    }
+    if (fclose(fp) != 0) {
+        fp = NULL;
+        goto cleanup;
+    }
+    fp = NULL;
+
+    if (rename(tmp_path, path) != 0) {
+        goto cleanup;
+    }
+    if (fsync_parent_dir(path) != 0) {
+        goto cleanup;
+    }
+
+    rc = 0;
+
+cleanup:
+    if (fp) {
+        fclose(fp);
+    }
+    if (fd >= 0) {
+        close(fd);
+    }
+    if (rc != 0) {
+        unlink(tmp_path);
+    }
+    free(tmp_path);
+    return rc;
+}
+
 int state_write_json(ApiContext *ctx, const char *name, cJSON *json) {
     char *path = state_path(ctx, name);
     char *text;
-    FILE *fp;
-    int rc = -1;
+    int rc;
 
     if (!path || !json) {
         free(path);
@@ -43,13 +150,7 @@ int state_write_json(ApiContext *ctx, const char *name, cJSON *json) {
         return -1;
     }
 
-    fp = fopen(path, "wb");
-    if (fp) {
-        size_t len = strlen(text);
-        rc = fwrite(text, 1, len, fp) == len ? 0 : -1;
-        fclose(fp);
-    }
-
+    rc = write_text_atomic(path, text);
     free(text);
     free(path);
     return rc;

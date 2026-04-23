@@ -24,7 +24,10 @@ HOST_APP_OBJS := $(patsubst %.c,$(HOST_OBJ_DIR)/%.o,$(HOST_APP_SRCS))
 HOST_TEST_APP_OBJS := $(patsubst %.c,$(HOST_OBJ_DIR)/%.o,$(HOST_TEST_APP_SRCS))
 HOST_TEST_SUPPORT_OBJ := $(HOST_OBJ_DIR)/tests/host/test_support.o
 HOST_TEST_SRCS := $(filter-out tests/host/test_support.c,$(wildcard tests/host/test_*.c))
+HOST_TEST_OBJS := $(patsubst %.c,$(HOST_OBJ_DIR)/%.o,$(HOST_TEST_SRCS))
 HOST_TEST_BINS := $(patsubst tests/host/%.c,$(HOST_BIN_DIR)/%,$(HOST_TEST_SRCS))
+DEPFILES := $(OBJS:.o=.d) $(HOST_APP_OBJS:.o=.d) \
+	$(HOST_TEST_SUPPORT_OBJ:.o=.d) $(HOST_TEST_OBJS:.o=.d)
 
 ASSET_ICON := assets/icons/weread.png
 ASSET_ICONTOP := assets/icons/weread-icontop.png
@@ -117,8 +120,9 @@ else
   COMMON_CFLAGS += -DHAVE_SDL=0
 endif
 
-CFLAGS := -mcpu=cortex-a53 -O2 $(COMMON_CFLAGS) $(SDL_CFLAGS) $(CURL_CFLAGS)
+CFLAGS := -mcpu=cortex-a53 -O2 -MMD -MP $(COMMON_CFLAGS) $(SDL_CFLAGS) $(CURL_CFLAGS)
 LDFLAGS := $(SDL_LIBS) $(CURL_LIBS) $(COMMON_LDFLAGS) -lpthread
+HOST_CFLAGS += -MMD -MP
 
 .PHONY: all help clean clean-tg5040 clean-dist \
 	dirs tg5040 tg5040-sdk tg5040-toolchain tg5040-libcurl tg5040-bootstrap \
@@ -150,8 +154,8 @@ help:
 	@printf '%s\n' 'Build / debug targets:'
 	@printf '%s\n' '  make tg5040             Build the tg5040 binary only'
 	@printf '%s\n' '  make test-host          Build and run host-native C verification binaries'
-	@printf '%s\n' '  make test-smoke         Run thin host-native CLI smoke checks'
-	@printf '%s\n' '  make test-package-audit-smoke Run deterministic smoke coverage for the package audit helper'
+	@printf '%s\n' '  make test-smoke         Run thin host-native CLI smoke checks only'
+	@printf '%s\n' '  make test-package-audit-smoke Run deterministic smoke coverage for the package audit helper and exec bits'
 	@printf '%s\n' '  make doctor-release     Verify tg5040 release prerequisites before packaging'
 	@printf '%s\n' '  make print-config       Print resolved build configuration'
 	@printf '%s\n' ''
@@ -181,6 +185,8 @@ $(HOST_APP_PATH): $(HOST_APP_OBJS)
 $(HOST_BIN_DIR)/test_%: $(HOST_OBJ_DIR)/tests/host/test_%.o $(HOST_TEST_SUPPORT_OBJ) $(HOST_TEST_APP_OBJS)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -o $@ $^ $(HOST_LDFLAGS)
+
+-include $(DEPFILES)
 
 tg5040:
 	$(MAKE) PLATFORM=tg5040 all

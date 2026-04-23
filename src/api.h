@@ -36,6 +36,8 @@ void api_cleanup(ApiContext *ctx);
 
 /* Fetch a URL, return response in buf. Caller must free buf->data. */
 int api_get(ApiContext *ctx, const char *url, Buffer *buf);
+int api_get_timeout(ApiContext *ctx, const char *url, Buffer *buf, long timeout_seconds);
+int api_get_once_timeout(ApiContext *ctx, const char *url, Buffer *buf, long timeout_seconds);
 int api_get_with_ua(ApiContext *ctx, const char *url, const char *user_agent, Buffer *buf);
 int api_post(ApiContext *ctx, const char *url, const char *body, Buffer *buf);
 int api_post_timeout(ApiContext *ctx, const char *url, const char *body, Buffer *buf, long timeout_seconds);

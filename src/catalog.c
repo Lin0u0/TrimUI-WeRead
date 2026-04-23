@@ -232,8 +232,8 @@ static char *reader_format_catalog_title(int chapter_idx, const char *title) {
     return formatted;
 }
 
-static int reader_catalog_merge_item(ReaderCatalogItem **items_inout, int *count_inout, int *cap_inout,
-                                     ReaderCatalogItem *item) {
+int reader_catalog_merge_item(ReaderCatalogItem **items_inout, int *count_inout, int *cap_inout,
+                              ReaderCatalogItem *item) {
     ReaderCatalogItem *tmp;
     int existing_index;
 
@@ -929,4 +929,130 @@ int reader_focus_catalog(ApiContext *ctx, ReaderDocument *doc) {
         return 0;
     }
     return reader_focus_catalog_window(ctx, doc);
+}
+
+int reader_ensure_full_catalog(ApiContext *ctx, ReaderDocument *doc) {
+    if (!doc) {
+        return -1;
+    }
+    if (doc->catalog_total_count <= 0 || doc->catalog_count <= 0 ||
+        doc->catalog_count >= doc->catalog_total_count) {
+        return 0;
+    }
+    return reader_hydrate_full_catalog(ctx, doc);
+}
+
+int reader_merge_catalog_chunk(ReaderDocument *doc, ReaderCatalogItem *chunk, int chunk_count,
+                               int *added_count) {
+    int cap = 0;
+    int before_count = 0;
+
+    if (added_count) {
+        *added_count = 0;
+    }
+    if (!doc || !doc->catalog_items || doc->catalog_count < 0 || !chunk || chunk_count < 0) {
+        return -1;
+    }
+
+    before_count = doc->catalog_count;
+    cap = doc->catalog_count;
+    for (int i = 0; i < chunk_count; i++) {
+        if (reader_catalog_merge_item(&doc->catalog_items, &doc->catalog_count, &cap,
+                                      &chunk[i]) != 0) {
+            return -1;
+        }
+    }
+    if (doc->catalog_count > 1) {
+        qsort(doc->catalog_items, (size_t)doc->catalog_count, sizeof(*doc->catalog_items),
+              catalog_item_cmp_chapter_idx);
+    }
+    if (added_count) {
+        *added_count = doc->catalog_count - before_count;
+    }
+    return 0;
+}
+
+int reader_expand_catalog(ApiContext *ctx, ReaderDocument *doc, int direction, int *added_count) {
+    ReaderCatalogItem *chunk = NULL;
+    int chunk_count = 0;
+    int first_idx = 0;
+    int last_idx = 0;
+
+    if (added_count) {
+        *added_count = 0;
+    }
+    if (!ctx || !doc || !doc->book_id || !doc->catalog_items || doc->catalog_count <= 0 ||
+        doc->catalog_total_count <= 0) {
+        return -1;
+    }
+
+    first_idx = doc->catalog_items[0].chapter_idx;
+    last_idx = doc->catalog_items[doc->catalog_count - 1].chapter_idx;
+
+    if (direction < 0) {
+        if (first_idx <= 1) {
+            return 0;
+        }
+        if (reader_fetch_catalog_chunk(ctx, doc->book_id, 1, first_idx, last_idx,
+                                       doc->chapter_uid, &chunk, &chunk_count,
+                                       &first_idx, &last_idx) != 0 || chunk_count <= 0) {
+            return -1;
+        }
+    } else if (direction > 0) {
+        if (last_idx >= doc->catalog_total_count) {
+            return 0;
+        }
+        if (reader_fetch_catalog_chunk(ctx, doc->book_id, 2, first_idx, last_idx,
+                                       doc->chapter_uid, &chunk, &chunk_count,
+                                       &first_idx, &last_idx) != 0 || chunk_count <= 0) {
+            return -1;
+        }
+    } else {
+        return -1;
+    }
+
+    if (reader_merge_catalog_chunk(doc, chunk, chunk_count, added_count) != 0) {
+        reader_catalog_items_free(chunk, chunk_count);
+        return -1;
+    }
+    reader_catalog_items_free(chunk, chunk_count);
+    return 0;
+}
+
+char *reader_find_chapter_target(ApiContext *ctx, const char *book_id,
+                                 const char *chapter_uid, int chapter_idx) {
+    ReaderCatalogItem *chunk = NULL;
+    int chunk_count = 0;
+    int first_idx = 0;
+    int last_idx = 0;
+    char *result = NULL;
+    int range;
+
+    if (!ctx || !book_id || !*book_id || (chapter_idx <= 0 && (!chapter_uid || !*chapter_uid))) {
+        return NULL;
+    }
+
+    range = chapter_idx > 20 ? chapter_idx - 20 : 0;
+    if (reader_fetch_catalog_chunk(ctx, book_id, 2, range, range,
+                                   NULL, &chunk, &chunk_count,
+                                   &first_idx, &last_idx) != 0 || chunk_count <= 0) {
+        return NULL;
+    }
+    for (int i = 0; i < chunk_count; i++) {
+        if (!result) {
+            if (chapter_uid && chapter_uid[0] && strcmp(chapter_uid, "0") != 0 &&
+                chunk[i].chapter_uid && strcmp(chunk[i].chapter_uid, chapter_uid) == 0 &&
+                chunk[i].target) {
+                result = strdup(chunk[i].target);
+            } else if (chapter_idx > 0 && chunk[i].chapter_idx == chapter_idx &&
+                       chunk[i].target) {
+                result = strdup(chunk[i].target);
+            }
+        }
+        free(chunk[i].chapter_uid);
+        free(chunk[i].target);
+        free(chunk[i].title);
+    }
+    free(chunk);
+    return result;
 }

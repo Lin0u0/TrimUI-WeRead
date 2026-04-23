@@ -24,6 +24,9 @@ typedef struct {
 static ReaderServiceFixtureContext g_reader_fixture = {0};
 static int g_session_validate_result = 1;
 static int g_session_remote_logout_result = 0;
+static int g_report_progress_results[4] = {0};
+static int g_report_progress_result_count = 0;
+static int g_report_progress_call_count = 0;
 static cJSON *g_article_open_case = NULL;
 static cJSON *g_reader_page_case = NULL;
 
@@ -165,6 +168,28 @@ static int session_service_test_validate(ApiContext *ctx, cJSON **shelf_nuxt_out
 static int session_service_test_remote_logout(ApiContext *ctx) {
     (void)ctx;
     return g_session_remote_logout_result;
+}
+
+static int reader_service_test_report_progress(ApiContext *ctx, const ReaderDocument *doc,
+                                               int current_page, int total_pages,
+                                               int chapter_offset, int reading_seconds,
+                                               const char *page_summary,
+                                               int compute_progress) {
+    int index = g_report_progress_call_count++;
+
+    (void)ctx;
+    (void)doc;
+    (void)current_page;
+    (void)total_pages;
+    (void)chapter_offset;
+    (void)reading_seconds;
+    (void)page_summary;
+    (void)compute_progress;
+
+    if (index >= 0 && index < g_report_progress_result_count) {
+        return g_report_progress_results[index];
+    }
+    return READER_REPORT_OK;
 }
 
 static int shelf_service_test_resolve_review_id(ApiContext *ctx, const char *entry_id,
@@ -801,6 +826,45 @@ static void assert_reader_preference_fallback(ApiContext *ctx) {
     cJSON_Delete(documents);
 }
 
+static void assert_progress_retry_behavior(ApiContext *ctx) {
+    ReaderDocument doc = {
+        .kind = READER_DOCUMENT_KIND_BOOK,
+        .book_id = (char *)"book-1",
+        .token = (char *)"token-1",
+        .chapter_uid = (char *)"chapter-1",
+        .chapter_idx = 1,
+    };
+
+    HOST_TEST_ASSERT(ctx != NULL);
+
+    reader_service_set_report_progress_override(reader_service_test_report_progress);
+
+    g_report_progress_call_count = 0;
+    g_report_progress_result_count = 1;
+    g_report_progress_results[0] = READER_REPORT_SESSION_EXPIRED;
+    HOST_TEST_ASSERT_INT_EQ(
+        reader_service_report_progress_with_retry(ctx->data_dir, ctx->ca_file,
+                                                  &doc, 0, 1, 0, 0, "", 0),
+        READER_REPORT_SESSION_EXPIRED
+    );
+    HOST_TEST_ASSERT_INT_EQ(g_report_progress_call_count, 1);
+
+    g_report_progress_call_count = 0;
+    g_report_progress_result_count = 2;
+    g_report_progress_results[0] = READER_REPORT_ERROR;
+    g_report_progress_results[1] = READER_REPORT_OK;
+    HOST_TEST_ASSERT_INT_EQ(
+        reader_service_report_progress_with_retry(ctx->data_dir, ctx->ca_file,
+                                                  &doc, 0, 1, 0, 0, "", 0),
+        READER_REPORT_OK
+    );
+    HOST_TEST_ASSERT_INT_EQ(g_report_progress_call_count, 2);
+
+    reader_service_set_report_progress_override(NULL);
+    g_report_progress_result_count = 0;
+    g_report_progress_call_count = 0;
+}
+
 int main(void) {
     ApiContext ctx;
     char temp_dir[PATH_MAX];
@@ -822,6 +886,7 @@ int main(void) {
     assert_reader_open_cases(&ctx, reader_fixture);
     assert_reader_page_cases(&ctx, reader_fixture);
     assert_reader_preference_fallback(&ctx);
+    assert_progress_retry_behavior(&ctx);
 
     cJSON_Delete(reader_fixture);
     cJSON_Delete(shelf_fixture);
