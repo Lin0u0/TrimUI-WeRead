@@ -164,7 +164,13 @@ void ui_runtime_wait_for_next_frame(UiRuntime *runtime, Uint32 frame_now) {
     frame_elapsed = SDL_GetTicks() - frame_now;
 
     if (frame_elapsed < sleep_budget) {
-        SDL_Delay(sleep_budget - frame_elapsed);
+        SDL_Event waited_event;
+        int wait_timeout_ms = (int)(sleep_budget - frame_elapsed);
+
+        if (wait_timeout_ms > 0 &&
+            SDL_WaitEventTimeout(&waited_event, wait_timeout_ms) == 1) {
+            SDL_PushEvent(&waited_event);
+        }
     } else if (sleep_budget == 0) {
         Uint32 now = SDL_GetTicks();
         time_t wait_wall_now = time(NULL);
@@ -203,6 +209,13 @@ void ui_runtime_wait_for_next_frame(UiRuntime *runtime, Uint32 frame_now) {
                 runtime->reader_state.progress_report_due_tick < next_deadline) {
                 next_deadline = runtime->reader_state.progress_report_due_tick;
             }
+            if (runtime->reader_state.position_dirty) {
+                Uint32 save_due = runtime->reader_state.position_dirty_tick +
+                    UI_READER_POSITION_SAVE_DEBOUNCE_MS;
+                if (save_due < next_deadline) {
+                    next_deadline = save_due;
+                }
+            }
             if (runtime->haptic_state.stop_tick > 0 &&
                 runtime->haptic_state.stop_tick < next_deadline) {
                 next_deadline = runtime->haptic_state.stop_tick;
@@ -216,7 +229,7 @@ void ui_runtime_wait_for_next_frame(UiRuntime *runtime, Uint32 frame_now) {
                 next_deadline = runtime->exit_confirm_until;
             }
             if (background_busy) {
-                Uint32 bg_poll = now + 100;
+                Uint32 bg_poll = now + 500;
                 if (bg_poll < next_deadline) {
                     next_deadline = bg_poll;
                 }

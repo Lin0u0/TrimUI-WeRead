@@ -348,9 +348,6 @@ int shelf_service_prepare_selected_open(cJSON *shelf_nuxt, int selected,
     } else {
         book_id[0] = '\0';
     }
-    fprintf(stderr,
-            "shelf-open-book: selected=%d source_index=%d bookId=%s target=%s\n",
-            selected, source_index, book_id[0] ? book_id : "(null)", target);
     snprintf(loading_title, loading_title_size,
              "\xE6\xAD\xA3\xE5\x9C\xA8\xE6\x89\x93\xE5\xBC\x80");
     snprintf(status, status_size,
@@ -389,12 +386,6 @@ int shelf_service_prepare_article_open(ApiContext *ctx, cJSON *shelf_nuxt, int f
         return 0;
     }
 
-    fprintf(stderr,
-            "shelf-open-article: entryId=%s sourceTarget=%s inlineReviewId=%s target=%s\n",
-            article_slot.entry_id ? article_slot.entry_id : "(null)",
-            article_slot.source_target ? article_slot.source_target : "(null)",
-            article_slot.review_id ? article_slot.review_id : "(null)",
-            target);
     snprintf(loading_title, loading_title_size,
              "\xE6\xAD\xA3\xE5\x9C\xA8\xE6\x89\x93\xE5\xBC\x80");
     snprintf(status, status_size, "正在加载文章...");

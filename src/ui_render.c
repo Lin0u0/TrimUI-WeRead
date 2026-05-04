@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const UiTheme ui_theme_light = {
@@ -52,6 +53,84 @@ static const UiTheme ui_theme_dark = {
 
 static int ui_dark_mode = 0;
 
+enum {
+    UI_TEXT_TEXTURE_CACHE_LIMIT = 96
+};
+
+typedef struct {
+    SDL_Renderer *renderer;
+    TTF_Font *font;
+    SDL_Color color;
+    char *text;
+    SDL_Texture *texture;
+    int w;
+    int h;
+    Uint32 last_used;
+} UiTextTextureCacheEntry;
+
+static UiTextTextureCacheEntry ui_text_texture_cache[UI_TEXT_TEXTURE_CACHE_LIMIT];
+static Uint32 ui_text_texture_cache_clock = 1;
+
+static int ui_text_color_equal(SDL_Color a, SDL_Color b) {
+    return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+}
+
+static void ui_text_texture_cache_entry_clear(UiTextTextureCacheEntry *entry) {
+    if (!entry) {
+        return;
+    }
+    if (entry->texture) {
+        SDL_DestroyTexture(entry->texture);
+    }
+    free(entry->text);
+    memset(entry, 0, sizeof(*entry));
+}
+
+void ui_text_texture_cache_clear(void) {
+    for (int i = 0; i < UI_TEXT_TEXTURE_CACHE_LIMIT; i++) {
+        ui_text_texture_cache_entry_clear(&ui_text_texture_cache[i]);
+    }
+    ui_text_texture_cache_clock = 1;
+}
+
+static UiTextTextureCacheEntry *ui_text_texture_cache_lookup(SDL_Renderer *renderer,
+                                                             TTF_Font *font,
+                                                             SDL_Color color,
+                                                             const char *text) {
+    if (!renderer || !font || !text || !*text) {
+        return NULL;
+    }
+    for (int i = 0; i < UI_TEXT_TEXTURE_CACHE_LIMIT; i++) {
+        UiTextTextureCacheEntry *entry = &ui_text_texture_cache[i];
+        if (entry->texture &&
+            entry->renderer == renderer &&
+            entry->font == font &&
+            ui_text_color_equal(entry->color, color) &&
+            entry->text &&
+            strcmp(entry->text, text) == 0) {
+            entry->last_used = ui_text_texture_cache_clock++;
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+static UiTextTextureCacheEntry *ui_text_texture_cache_slot(void) {
+    UiTextTextureCacheEntry *oldest = &ui_text_texture_cache[0];
+
+    for (int i = 0; i < UI_TEXT_TEXTURE_CACHE_LIMIT; i++) {
+        UiTextTextureCacheEntry *entry = &ui_text_texture_cache[i];
+        if (!entry->texture) {
+            return entry;
+        }
+        if (entry->last_used < oldest->last_used) {
+            oldest = entry;
+        }
+    }
+    ui_text_texture_cache_entry_clear(oldest);
+    return oldest;
+}
+
 const UiTheme *ui_current_theme(void) {
     return ui_dark_mode ? &ui_theme_dark : &ui_theme_light;
 }
@@ -61,7 +140,12 @@ int ui_dark_mode_enabled(void) {
 }
 
 void ui_dark_mode_set(int enabled) {
-    ui_dark_mode = enabled ? 1 : 0;
+    int next = enabled ? 1 : 0;
+
+    if (ui_dark_mode != next) {
+        ui_text_texture_cache_clear();
+    }
+    ui_dark_mode = next;
 }
 
 int reader_top_inset_for_font_size(int font_size) {
@@ -161,10 +245,22 @@ void draw_text(SDL_Renderer *renderer, TTF_Font *font, int x, int y,
     SDL_Surface *surface;
     SDL_Texture *texture;
     SDL_Rect dst;
+    UiTextTextureCacheEntry *entry;
 
-    if (!font || !text || !*text) {
+    if (!renderer || !font || !text || !*text) {
         return;
     }
+
+    entry = ui_text_texture_cache_lookup(renderer, font, color, text);
+    if (entry) {
+        dst.x = x;
+        dst.y = y;
+        dst.w = entry->w;
+        dst.h = entry->h;
+        SDL_RenderCopy(renderer, entry->texture, NULL, &dst);
+        return;
+    }
+
     surface = TTF_RenderUTF8_Blended(font, text, color);
     if (!surface) {
         return;
@@ -174,12 +270,30 @@ void draw_text(SDL_Renderer *renderer, TTF_Font *font, int x, int y,
         SDL_FreeSurface(surface);
         return;
     }
+    entry = ui_text_texture_cache_slot();
+    entry->text = strdup(text);
+    if (!entry->text) {
+        dst.x = x;
+        dst.y = y;
+        dst.w = surface->w;
+        dst.h = surface->h;
+        SDL_RenderCopy(renderer, texture, NULL, &dst);
+        SDL_DestroyTexture(texture);
+        SDL_FreeSurface(surface);
+        return;
+    }
+    entry->renderer = renderer;
+    entry->font = font;
+    entry->color = color;
+    entry->texture = texture;
+    entry->w = surface->w;
+    entry->h = surface->h;
+    entry->last_used = ui_text_texture_cache_clock++;
     dst.x = x;
     dst.y = y;
-    dst.w = surface->w;
-    dst.h = surface->h;
-    SDL_RenderCopy(renderer, texture, NULL, &dst);
-    SDL_DestroyTexture(texture);
+    dst.w = entry->w;
+    dst.h = entry->h;
+    SDL_RenderCopy(renderer, entry->texture, NULL, &dst);
     SDL_FreeSurface(surface);
 }
 

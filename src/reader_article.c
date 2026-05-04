@@ -137,46 +137,6 @@ static int reader_build_mpdetail_target(ApiContext *ctx, const char *review_id, 
     return 0;
 }
 
-static void reader_log_article_page_markers(const char *target, const char *html) {
-    const char *marker;
-    const char *value_start;
-    const char *value_end;
-    char page_mid[128];
-    int has_mpdetail = 0;
-
-    if (!target || !html) {
-        return;
-    }
-
-    marker = strstr(html, "window.PAGE_MID=");
-    page_mid[0] = '\0';
-    if (marker) {
-        marker += strlen("window.PAGE_MID=");
-        if (*marker == '"' || *marker == '\'') {
-            char quote = *marker++;
-            size_t len;
-
-            value_start = marker;
-            value_end = strchr(value_start, quote);
-            if (value_end && value_end > value_start) {
-                len = (size_t)(value_end - value_start);
-                if (len >= sizeof(page_mid)) {
-                    len = sizeof(page_mid) - 1;
-                }
-                memcpy(page_mid, value_start, len);
-                page_mid[len] = '\0';
-            }
-        }
-    }
-
-    has_mpdetail = strstr(html, "mpDetailContent") != NULL;
-    fprintf(stderr,
-            "reader-article-page: target=%s pageMid=%s hasMpDetail=%d\n",
-            target,
-            page_mid[0] ? page_mid : "(missing)",
-            has_mpdetail);
-}
-
 static int reader_parse_article_catalog(ApiContext *ctx, const char *html,
                                         const char *article_block_start,
                                         const char *article_block_end,
@@ -403,12 +363,7 @@ int reader_load_article_from_review_id(ApiContext *ctx, const char *review_id,
 
     rc = reader_parse_article_document(ctx, article_target, font_size,
                                        article_buf.data, doc);
-    if (rc == 0) {
-        fprintf(stderr,
-                "reader-load: article shell resolved reviewId=%s target=%s title=%s\n",
-                review_id, article_target,
-                doc->book_title ? doc->book_title : "(null)");
-    } else {
+    if (rc != 0) {
         fprintf(stderr,
                 "reader-load: article shell parse failed reviewId=%s target=%s\n",
                 review_id, article_target);
@@ -441,7 +396,6 @@ int reader_parse_article_document(ApiContext *ctx, const char *target, int font_
     doc->catalog_range_end = 0;
     doc->catalog_count = 0;
     doc->catalog_items = NULL;
-    reader_log_article_page_markers(target, html);
     has_mpdetail_content = strstr(html, "mpDetailContent") != NULL;
     if (!has_mpdetail_content &&
         (strstr(html, "PAGE_MID='mmbizwap:secitptpage/verify.html'") != NULL ||

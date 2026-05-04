@@ -14,7 +14,7 @@ static void ui_handle_shelf_open(UiViewInputContext *context, const char *target
 
     ui_reader_flow_begin_reader_open(context->ctx, context->reader_open,
                                      context->reader_open_thread_handle,
-                                     target, book_id, font_size);
+                                     target, book_id, font_size, 0, NULL, 0, 0);
     if (atomic_load(&context->reader_open->running) || *context->reader_open_thread_handle) {
         *context->view = VIEW_OPENING;
         *render_requested = 1;
@@ -36,8 +36,14 @@ void ui_handle_shelf_view_action(UiViewInputContext *context, UiInputAction acti
         return;
     }
 
-    article_count = shelf_article_count(context->shelf_nuxt);
-    count = shelf_normal_book_count(context->shelf_nuxt);
+    if (context->shelf_covers &&
+        context->shelf_covers->source_nuxt == context->shelf_nuxt) {
+        article_count = context->shelf_covers->article_count;
+        count = context->shelf_covers->book_count;
+    } else {
+        article_count = shelf_article_count(context->shelf_nuxt);
+        count = shelf_normal_book_count(context->shelf_nuxt);
+    }
     total_count = article_count + count;
     min_selected = article_count > 0 ? -article_count : 0;
 

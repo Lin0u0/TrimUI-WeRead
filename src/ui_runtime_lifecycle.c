@@ -162,7 +162,8 @@ void ui_runtime_shutdown(UiRuntime *runtime, ApiContext *ctx) {
     ui_platform_shutdown_haptics(&runtime->haptic_state);
     if (runtime->view == VIEW_READER) {
         ui_reader_view_flush_progress_blocking(ctx, &runtime->reader_state, 1);
-        ui_reader_view_save_local_position(ctx, &runtime->reader_state);
+        ui_reader_view_save_local_position_if_due(ctx, &runtime->reader_state,
+                                                  SDL_GetTicks(), 1);
     }
     ui_startup_login_shutdown(&runtime->login_poll, &runtime->login_thread,
                               &runtime->startup_thread_handle,
@@ -192,6 +193,7 @@ void ui_runtime_shutdown(UiRuntime *runtime, ApiContext *ctx) {
     if (runtime->scene_texture) {
         SDL_DestroyTexture(runtime->scene_texture);
     }
+    ui_text_texture_cache_clear();
     if (runtime->renderer) {
         SDL_DestroyRenderer(runtime->renderer);
     }

@@ -23,6 +23,7 @@ static int ui_reader_flow_progress_report_thread(void *userdata) {
                                                               state->page_summary,
                                                               state->compute_progress);
     state->running = 0;
+    ui_runtime_signal_worker_done();
     return state->result;
 }
 
@@ -39,16 +40,32 @@ static int ui_reader_flow_open_thread(void *userdata) {
                 state->source_target);
         state->failed = 1;
         state->running = 0;
+        ui_runtime_signal_worker_done();
         return -1;
     }
     snprintf(ctx.ca_file, sizeof(ctx.ca_file), "%s", state->ca_file);
 
     memset(&result, 0, sizeof(result));
-    if (reader_service_prepare_open_document(&ctx,
-                                             state->source_target,
-                                             state->book_id[0] ? state->book_id : NULL,
-                                             state->font_size,
-                                             &result) == 0) {
+    if (state->direct_open) {
+        if (reader_load(&ctx, state->source_target, state->font_size, &state->doc) == 0) {
+            state->content_font_size = state->content_font_size > 0 ?
+                state->content_font_size : UI_READER_CONTENT_FONT_SIZE;
+            state->initial_page = 0;
+            state->initial_offset = 0;
+            state->honor_saved_position = 0;
+            state->ready = 1;
+        } else {
+            fprintf(stderr,
+                    "reader-open-thread: failed source=%s bookId=%s\n",
+                    state->source_target,
+                    state->book_id[0] ? state->book_id : "(null)");
+            state->failed = 1;
+        }
+    } else if (reader_service_prepare_open_document(&ctx,
+                                                    state->source_target,
+                                                    state->book_id[0] ? state->book_id : NULL,
+                                                    state->font_size,
+                                                    &result) == 0) {
         state->doc = result.doc;
         memset(&result.doc, 0, sizeof(result.doc));
         ui_copy_string(state->source_target, sizeof(state->source_target),
@@ -58,16 +75,6 @@ static int ui_reader_flow_open_thread(void *userdata) {
         state->initial_offset = result.initial_offset;
         state->honor_saved_position = result.honor_saved_position;
         state->ready = 1;
-        fprintf(stderr,
-                "reader-open-thread: ready source=%s finalSource=%s docTarget=%s kind=%s bookId=%s initialPage=%d initialOffset=%d honorSaved=%d\n",
-                state->source_target,
-                result.source_target,
-                state->doc.target ? state->doc.target : "(null)",
-                state->doc.kind == READER_DOCUMENT_KIND_ARTICLE ? "article" : "book",
-                state->doc.book_id ? state->doc.book_id : "(null)",
-                state->initial_page,
-                state->initial_offset,
-                state->honor_saved_position);
     } else {
         fprintf(stderr,
                 "reader-open-thread: failed source=%s bookId=%s\n",
@@ -79,6 +86,7 @@ static int ui_reader_flow_open_thread(void *userdata) {
     state->poor_network = ctx.poor_network;
     api_cleanup(&ctx);
     state->running = 0;
+    ui_runtime_signal_worker_done();
     return state->ready ? 0 : -1;
 }
 
@@ -92,6 +100,7 @@ static int ui_reader_flow_prefetch_thread(void *userdata) {
     if (api_init(&ctx, state->data_dir) != 0) {
         state->failed = 1;
         state->running = 0;
+        ui_runtime_signal_worker_done();
         return -1;
     }
     snprintf(ctx.ca_file, sizeof(ctx.ca_file), "%s", state->ca_file);
@@ -104,6 +113,7 @@ static int ui_reader_flow_prefetch_thread(void *userdata) {
 
     api_cleanup(&ctx);
     state->running = 0;
+    ui_runtime_signal_worker_done();
     return state->ready ? 0 : -1;
 }
 
@@ -118,6 +128,7 @@ static int ui_reader_flow_catalog_hydration_thread(void *userdata) {
     if (api_init(&ctx, state->data_dir) != 0) {
         state->failed = 1;
         state->running = 0;
+        ui_runtime_signal_worker_done();
         return -1;
     }
     snprintf(ctx.ca_file, sizeof(ctx.ca_file), "%s", state->ca_file);
@@ -135,6 +146,7 @@ static int ui_reader_flow_catalog_hydration_thread(void *userdata) {
 
     api_cleanup(&ctx);
     state->running = 0;
+    ui_runtime_signal_worker_done();
     return state->ready ? 0 : -1;
 }
 
@@ -245,6 +257,7 @@ static void ui_reader_flow_queue_report(ApiContext *ctx, ReaderViewState *state,
                                       "weread-progress-report", report_state);
     if (!*report_thread) {
         ui_reader_flow_progress_report_state_reset(report_state);
+        ui_runtime_signal_worker_done();
     }
 }
 
@@ -279,6 +292,7 @@ static void ui_reader_flow_prefetch_maybe_start(ApiContext *ctx, ChapterPrefetch
     if (!*thread_handle) {
         state->running = 0;
         state->failed = 1;
+        ui_runtime_signal_worker_done();
     }
 }
 
@@ -520,13 +534,6 @@ static int ui_reader_flow_catalog_hydration_poll(ReaderViewState *reader_state,
             reader_state->catalog_selected = index >= 0 ? index : 0;
         }
         render_requested = reader_state->catalog_open && added_count > 0;
-        fprintf(stderr,
-                "reader-catalog-bg: merged bookId=%s direction=%d added=%d count=%d total=%d\n",
-                reader_state->doc.book_id,
-                state->direction,
-                added_count,
-                reader_state->doc.catalog_count,
-                reader_state->doc.catalog_total_count);
     }
     ui_reader_flow_catalog_hydration_state_reset(state);
     return render_requested;
@@ -587,6 +594,7 @@ static void ui_reader_flow_catalog_hydration_maybe_start(ApiContext *ctx,
     if (!*thread_handle) {
         state->running = 0;
         state->failed = 1;
+        ui_runtime_signal_worker_done();
         fprintf(stderr,
                 "reader-catalog-bg: SDL_CreateThread failed bookId=%s direction=%d range=%d-%d\n",
                 state->book_id,
@@ -596,14 +604,6 @@ static void ui_reader_flow_catalog_hydration_maybe_start(ApiContext *ctx,
         return;
     }
 
-    fprintf(stderr,
-            "reader-catalog-bg: begin bookId=%s direction=%d range=%d-%d count=%d total=%d\n",
-            state->book_id,
-            state->direction,
-            state->range_start,
-            state->range_end,
-            reader_state->doc.catalog_count,
-            reader_state->doc.catalog_total_count);
 }
 
 int ui_reader_flow_tick_reader(ApiContext *ctx, ReaderViewState *reader_state,
@@ -750,7 +750,9 @@ void ui_reader_flow_poll_background(ChapterPrefetchCache *chapter_prefetch_cache
 void ui_reader_flow_begin_reader_open(ApiContext *ctx, ReaderOpenState *reader_open,
                                       SDL_Thread **reader_open_thread_handle,
                                       const char *source_target, const char *book_id,
-                                      int font_size) {
+                                      int font_size, int content_font_size,
+                                      const char *source_target_override,
+                                      int place_at_end, int direct_open) {
     if (!ctx || !reader_open || !reader_open_thread_handle || !source_target ||
         !*source_target || *reader_open_thread_handle || reader_open->running) {
         return;
@@ -764,18 +766,22 @@ void ui_reader_flow_begin_reader_open(ApiContext *ctx, ReaderOpenState *reader_o
         snprintf(reader_open->book_id, sizeof(reader_open->book_id), "%s", book_id);
     }
     reader_open->font_size = font_size;
-    reader_open->content_font_size = UI_READER_CONTENT_FONT_SIZE;
-    fprintf(stderr,
-            "reader-open-begin: source=%s bookId=%s font=%d\n",
-            reader_open->source_target,
-            reader_open->book_id[0] ? reader_open->book_id : "(null)",
-            reader_open->font_size);
+    reader_open->content_font_size = content_font_size > 0 ?
+        content_font_size : UI_READER_CONTENT_FONT_SIZE;
+    if (source_target_override && source_target_override[0]) {
+        snprintf(reader_open->source_target_override,
+                 sizeof(reader_open->source_target_override), "%s",
+                 source_target_override);
+    }
+    reader_open->place_at_end = place_at_end ? 1 : 0;
+    reader_open->direct_open = direct_open ? 1 : 0;
     reader_open->running = 1;
     *reader_open_thread_handle =
         SDL_CreateThread(ui_reader_flow_open_thread, "weread-reader-open", reader_open);
     if (!*reader_open_thread_handle) {
         reader_open->running = 0;
         reader_open->failed = 1;
+        ui_runtime_signal_worker_done();
         fprintf(stderr,
                 "reader-open-begin: SDL_CreateThread failed source=%s\n",
                 reader_open->source_target);
@@ -802,17 +808,6 @@ int ui_reader_flow_finish_open(ApiContext *ctx, TTF_Font *body_font,
     if (reader_open->poor_network) {
         *poor_network_toast_until = SDL_GetTicks() + 3000;
     }
-    fprintf(stderr,
-            "reader-open-finish: begin source=%s ready=%d failed=%d kind=%s docTarget=%s initialPage=%d initialOffset=%d honorSaved=%d contentFont=%d\n",
-            reader_open->source_target,
-            reader_open->ready,
-            reader_open->failed,
-            reader_open->doc.kind == READER_DOCUMENT_KIND_ARTICLE ? "article" : "book",
-            reader_open->doc.target ? reader_open->doc.target : "(null)",
-            reader_open->initial_page,
-            reader_open->initial_offset,
-            reader_open->honor_saved_position,
-            reader_open->content_font_size);
     reader_state->content_font_size = reader_open->content_font_size;
     if (reader_open->ready &&
         ui_reader_view_adopt_document(body_font, &reader_open->doc,
@@ -820,7 +815,11 @@ int ui_reader_flow_finish_open(ApiContext *ctx, TTF_Font *body_font,
                                       current_layout->reader_content_h,
                                       reader_open->honor_saved_position,
                                       reader_state) == 0) {
-        if (!reader_open->honor_saved_position) {
+        if (reader_open->place_at_end) {
+            int total_pages = ui_reader_view_total_pages(reader_state);
+            reader_state->current_page = total_pages > 0 ? total_pages - 1 : 0;
+            ui_reader_view_clamp_current_page(reader_state);
+        } else if (!reader_open->honor_saved_position) {
             if (reader_open->initial_offset > 0) {
                 reader_state->current_page =
                     ui_reader_view_find_page_for_offset(reader_state,
@@ -830,17 +829,14 @@ int ui_reader_flow_finish_open(ApiContext *ctx, TTF_Font *body_font,
             }
             ui_reader_view_clamp_current_page(reader_state);
         }
-        ui_reader_view_set_source_target(reader_state, reader_open->source_target);
+        ui_reader_view_set_source_target(
+            reader_state,
+            reader_open->source_target_override[0] ?
+            reader_open->source_target_override : reader_open->source_target);
         ui_reader_view_save_local_position(ctx, reader_state);
         shelf_status[0] = '\0';
         status[0] = '\0';
         *view = VIEW_READER;
-        fprintf(stderr,
-                "reader-open-finish: adopted source=%s docTarget=%s view=reader currentPage=%d totalLines=%d\n",
-                reader_open->source_target,
-                reader_state->doc.target ? reader_state->doc.target : "(null)",
-                reader_state->current_page,
-                reader_state->line_count);
     } else if (reader_open->failed || !reader_open->ready) {
         fprintf(stderr,
                 "reader-open-finish: open failed source=%s shelfAvailable=%d ready=%d failed=%d\n",
@@ -848,7 +844,7 @@ int ui_reader_flow_finish_open(ApiContext *ctx, TTF_Font *body_font,
                 shelf_available,
                 reader_open->ready,
                 reader_open->failed);
-        if (shelf_available) {
+        if (shelf_available && !reader_open->direct_open) {
             *view = VIEW_SHELF;
             snprintf(shelf_status, shelf_status_size,
                      "\xE6\x97\xA0\xE6\xB3\x95\xE6\x89\x93\xE5\xBC\x80\xE6\x89\x80\xE9\x80\x89\xE4\xB9\xA6\xE7\xB1\x8D");
@@ -856,14 +852,26 @@ int ui_reader_flow_finish_open(ApiContext *ctx, TTF_Font *body_font,
         } else {
             char retry_target[2048];
             char retry_book_id[256];
+            char retry_override[2048];
             int retry_font_size = reader_open->font_size;
+            int retry_content_font_size = reader_open->content_font_size;
+            int retry_place_at_end = reader_open->place_at_end;
+            int retry_direct_open = reader_open->direct_open;
+
             ui_copy_string(retry_target, sizeof(retry_target), reader_open->source_target);
             ui_copy_string(retry_book_id, sizeof(retry_book_id), reader_open->book_id);
+            ui_copy_string(retry_override, sizeof(retry_override),
+                           reader_open->source_target_override);
             ui_reader_flow_reader_open_state_reset(reader_open);
             ui_copy_string(reader_open->source_target, sizeof(reader_open->source_target),
                            retry_target);
             ui_copy_string(reader_open->book_id, sizeof(reader_open->book_id), retry_book_id);
             reader_open->font_size = retry_font_size;
+            reader_open->content_font_size = retry_content_font_size;
+            ui_copy_string(reader_open->source_target_override,
+                           sizeof(reader_open->source_target_override), retry_override);
+            reader_open->place_at_end = retry_place_at_end;
+            reader_open->direct_open = retry_direct_open;
             *view = VIEW_OPENING;
             snprintf(status, status_size,
                      "\xE6\x89\x93\xE5\xBC\x80\xE5\xA4\xB1\xE8\xB4\xA5\xEF\xBC\x8C\xE6\x8C\x89 A \xE9\x87\x8D\xE8\xAF\x95");
@@ -875,16 +883,27 @@ int ui_reader_flow_finish_open(ApiContext *ctx, TTF_Font *body_font,
         {
             char retry_target[2048];
             char retry_book_id[256];
+            char retry_override[2048];
             int retry_font_size = reader_open->font_size;
+            int retry_content_font_size = reader_open->content_font_size;
+            int retry_place_at_end = reader_open->place_at_end;
+            int retry_direct_open = reader_open->direct_open;
 
             ui_copy_string(retry_target, sizeof(retry_target), reader_open->source_target);
             ui_copy_string(retry_book_id, sizeof(retry_book_id), reader_open->book_id);
+            ui_copy_string(retry_override, sizeof(retry_override),
+                           reader_open->source_target_override);
             reader_document_free(&reader_open->doc);
             memset(reader_open, 0, sizeof(*reader_open));
             ui_copy_string(reader_open->source_target, sizeof(reader_open->source_target),
                            retry_target);
             ui_copy_string(reader_open->book_id, sizeof(reader_open->book_id), retry_book_id);
             reader_open->font_size = retry_font_size;
+            reader_open->content_font_size = retry_content_font_size;
+            ui_copy_string(reader_open->source_target_override,
+                           sizeof(reader_open->source_target_override), retry_override);
+            reader_open->place_at_end = retry_place_at_end;
+            reader_open->direct_open = retry_direct_open;
             reader_open->failed = 1;
             *view = VIEW_OPENING;
             snprintf(status, status_size,

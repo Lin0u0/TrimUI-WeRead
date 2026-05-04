@@ -364,7 +364,9 @@ int ui_handle_global_action(UiGlobalInputContext *context, UiInputAction action,
                 ui_platform_haptic_pulse(context->haptic_state, UI_HAPTIC_NAV_MS, 35);
             } else if (*context->reader_exit_confirm_until > frame_now) {
                 ui_reader_view_flush_progress_blocking(context->ctx, context->reader_state, 1);
-                ui_reader_view_save_local_position(context->ctx, context->reader_state);
+                ui_reader_view_save_local_position_if_due(context->ctx,
+                                                          context->reader_state,
+                                                          frame_now, 1);
                 *context->reader_exit_confirm_until = 0;
                 *context->exit_confirm_until = 0;
                 *context->view = VIEW_SHELF;
@@ -399,7 +401,9 @@ int ui_handle_global_action(UiGlobalInputContext *context, UiInputAction action,
         *context->last_lock_trigger_tick = frame_now;
         if (*context->view == VIEW_READER) {
             ui_reader_view_flush_progress_blocking(context->ctx, context->reader_state, 1);
-            ui_reader_view_save_local_position(context->ctx, context->reader_state);
+            ui_reader_view_save_local_position_if_due(context->ctx,
+                                                      context->reader_state,
+                                                      frame_now, 1);
         }
         if (ui_platform_lock_screen(context->tg5040_input) == 0) {
             context->repeat_state->action = UI_INPUT_ACTION_NONE;

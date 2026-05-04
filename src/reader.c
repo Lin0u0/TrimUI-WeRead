@@ -38,9 +38,6 @@ static int reader_load_internal(ApiContext *ctx, const char *target, int font_si
         return -1;
     }
 
-    fprintf(stderr,
-            "reader-load: target=%s url=%s font=%d saveLast=%d article=%d\n",
-            target, url, font_size, save_last_reader, is_article_target);
     memset(doc, 0, sizeof(*doc));
     if (reader_fetch_page(ctx, url, &buf) != 0) {
         fprintf(stderr, "reader-load: fetch failed url=%s\n", url);
@@ -51,22 +48,13 @@ static int reader_load_internal(ApiContext *ctx, const char *target, int font_si
                                   : READER_DOCUMENT_KIND_BOOK;
     if (is_article_target) {
         rc = reader_parse_article_document(ctx, target, font_size, buf.data, doc);
-        if (rc == 0) {
-            fprintf(stderr,
-                    "reader-load: article parsed target=%s docTarget=%s title=%s\n",
-                    target,
-                    doc->target ? doc->target : "(null)",
-                    doc->book_title ? doc->book_title : "(null)");
-        } else {
+        if (rc != 0) {
             fprintf(stderr, "reader-load: article parse failed target=%s\n", target);
         }
         goto cleanup;
     }
 
     if (reader_extract_article_review_id_from_reader_shell(buf.data, &article_review_id) == 1) {
-        fprintf(stderr,
-                "reader-load: article reader shell detected target=%s reviewId=%s\n",
-                target, article_review_id);
         rc = reader_load_article_from_review_id(ctx, article_review_id, font_size, doc);
         free(article_review_id);
         article_review_id = NULL;

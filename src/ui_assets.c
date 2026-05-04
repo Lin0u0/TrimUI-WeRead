@@ -66,6 +66,8 @@ void shelf_cover_cache_reset(ShelfCoverCache *cache) {
         shelf_cover_entry_reset(&cache->article_entry);
     }
     free(cache->entries);
+    free(cache->article_source_indices);
+    free(cache->book_source_indices);
     memset(cache, 0, sizeof(*cache));
     cache->last_trim_selected = INT_MIN;
     cache->last_trim_visible_start = INT_MIN;
@@ -220,8 +222,13 @@ int shelf_cover_prepare_nearby(ApiContext *ctx, SDL_Renderer *renderer,
         return 0;
     }
 
-    article_count = shelf_article_count(nuxt);
-    book_count = shelf_normal_book_count(nuxt);
+    if (cache->source_nuxt == nuxt) {
+        article_count = cache->article_count;
+        book_count = cache->book_count;
+    } else {
+        article_count = shelf_article_count(nuxt);
+        book_count = shelf_normal_book_count(nuxt);
+    }
     min_selected = article_count > 0 ? -article_count : 0;
     max_selected = book_count > 0 ? book_count - 1 : -1;
     if (max_selected < min_selected) {
@@ -286,9 +293,14 @@ int shelf_cover_prepare_nearby(ApiContext *ctx, SDL_Renderer *renderer,
 void shelf_cover_cache_build(ApiContext *ctx, cJSON *nuxt, ShelfCoverCache *cache) {
     char covers_dir[1024];
     char file_name[256];
+    cJSON *books;
+    cJSON *urls;
     int article_count;
     int book_count;
     int count;
+    int source_count;
+    int article_pos = 0;
+    int book_pos = 0;
 
     shelf_cover_cache_reset(cache);
     if (!ctx) {
@@ -300,23 +312,70 @@ void shelf_cover_cache_build(ApiContext *ctx, cJSON *nuxt, ShelfCoverCache *cach
         return;
     }
 
-    article_count = shelf_article_count(nuxt);
-    book_count = shelf_normal_book_count(nuxt);
+    books = shelf_books(nuxt);
+    urls = shelf_reader_urls(nuxt);
+    if (!books || !cJSON_IsArray(books)) {
+        return;
+    }
+
+    source_count = cJSON_GetArraySize(books);
+    article_count = 0;
+    book_count = 0;
+    for (int i = 0; i < source_count; i++) {
+        cJSON *book = cJSON_GetArrayItem(books, i);
+        cJSON *reader_item = cJSON_IsArray(urls) ? cJSON_GetArrayItem(urls, i) : NULL;
+
+        if (shelf_entry_is_article(book, reader_item)) {
+            article_count++;
+        } else {
+            book_count++;
+        }
+    }
     count = article_count + book_count;
     if (count <= 0) {
         return;
     }
+
+    if (article_count > 0) {
+        cache->article_source_indices = calloc((size_t)article_count, sizeof(int));
+        if (!cache->article_source_indices) {
+            shelf_cover_cache_reset(cache);
+            return;
+        }
+    }
+    if (book_count > 0) {
+        cache->book_source_indices = calloc((size_t)book_count, sizeof(int));
+        if (!cache->book_source_indices) {
+            shelf_cover_cache_reset(cache);
+            return;
+        }
+    }
+    for (int i = 0; i < source_count; i++) {
+        cJSON *book = cJSON_GetArrayItem(books, i);
+        cJSON *reader_item = cJSON_IsArray(urls) ? cJSON_GetArrayItem(urls, i) : NULL;
+
+        if (shelf_entry_is_article(book, reader_item)) {
+            cache->article_source_indices[article_pos++] = i;
+        } else {
+            cache->book_source_indices[book_pos++] = i;
+        }
+    }
+
     cache->entries = calloc((size_t)count, sizeof(ShelfCoverEntry));
     if (!cache->entries) {
-        cache->count = 0;
+        shelf_cover_cache_reset(cache);
         return;
     }
+    cache->source_nuxt = nuxt;
+    cache->article_count = article_count;
+    cache->book_count = book_count;
     cache->count = count;
 
     for (int i = 0; i < count; i++) {
-        cJSON *book = i < article_count ?
-            shelf_article_at(nuxt, i, NULL) :
-            shelf_normal_book_at(nuxt, i - article_count, NULL);
+        int source_index = i < article_count ?
+            cache->article_source_indices[i] :
+            cache->book_source_indices[i - article_count];
+        cJSON *book = cJSON_GetArrayItem(books, source_index);
         ShelfCoverEntry *entry = &cache->entries[i];
         const char *book_id = json_get_string(book, "bookId");
         const char *cover = shelf_cover_url(book);

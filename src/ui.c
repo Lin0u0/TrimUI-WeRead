@@ -88,6 +88,15 @@ void ui_force_exit_from_login(UiHapticState *haptic_state) {
     _Exit(0);
 }
 
+void ui_runtime_signal_worker_done(void) {
+    SDL_Event event;
+
+    memset(&event, 0, sizeof(event));
+    event.type = SDL_USEREVENT;
+    event.user.code = UI_WORKER_EVENT_DONE;
+    SDL_PushEvent(&event);
+}
+
 int ui_recreate_scene_texture(SDL_Renderer *renderer, SDL_Texture **scene_texture,
                                      const UiLayout *layout) {
     SDL_Texture *new_texture;

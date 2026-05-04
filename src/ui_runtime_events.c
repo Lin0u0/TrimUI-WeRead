@@ -196,6 +196,7 @@ void ui_runtime_process_events(UiRuntime *runtime, ApiContext *ctx,
             runtime->running = 0;
         } else if (event.type == SDL_RENDER_TARGETS_RESET ||
                    event.type == SDL_RENDER_DEVICE_RESET) {
+            ui_text_texture_cache_clear();
             if (ui_recreate_scene_texture(runtime->renderer,
                                           &runtime->scene_texture,
                                           &runtime->current_layout) != 0) {
@@ -208,6 +209,9 @@ void ui_runtime_process_events(UiRuntime *runtime, ApiContext *ctx,
             runtime->motion_state.last_tick = SDL_GetTicks();
             runtime->repeat_state.action = UI_INPUT_ACTION_NONE;
             runtime->repeat_state.next_tick = 0;
+        } else if (event.type == SDL_USEREVENT &&
+                   event.user.code == UI_WORKER_EVENT_DONE) {
+            frame->render_requested = 1;
         } else if (event.type == SDL_KEYDOWN ||
                    event.type == SDL_JOYBUTTONDOWN ||
                    event.type == SDL_JOYHATMOTION ||

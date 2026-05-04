@@ -8,11 +8,21 @@
 #include "json.h"
 #include "shelf.h"
 
-static int shelf_ui_normal_count(cJSON *nuxt) {
+static int shelf_ui_cache_matches(cJSON *nuxt, const ShelfCoverCache *cache) {
+    return cache && cache->source_nuxt == nuxt;
+}
+
+static int shelf_ui_normal_count(cJSON *nuxt, const ShelfCoverCache *cache) {
+    if (shelf_ui_cache_matches(nuxt, cache)) {
+        return cache->book_count;
+    }
     return shelf_normal_book_count(nuxt);
 }
 
-static int shelf_ui_article_count(cJSON *nuxt) {
+static int shelf_ui_article_count(cJSON *nuxt, const ShelfCoverCache *cache) {
+    if (shelf_ui_cache_matches(nuxt, cache)) {
+        return cache->article_count;
+    }
     return shelf_article_count(nuxt);
 }
 
@@ -22,8 +32,8 @@ int shelf_ui_default_selection(cJSON *nuxt) {
 }
 
 int shelf_ui_clamp_selection(cJSON *nuxt, int selected) {
-    int article_count = shelf_ui_article_count(nuxt);
-    int book_count = shelf_ui_normal_count(nuxt);
+    int article_count = shelf_article_count(nuxt);
+    int book_count = shelf_normal_book_count(nuxt);
     int min_selected = article_count > 0 ? -article_count : 0;
     int max_selected = book_count - 1;
 
@@ -39,7 +49,30 @@ int shelf_ui_clamp_selection(cJSON *nuxt, int selected) {
     return selected;
 }
 
-static cJSON *shelf_ui_selected_entry(cJSON *nuxt, int selected, int *source_index_out) {
+static cJSON *shelf_ui_selected_entry(cJSON *nuxt, const ShelfCoverCache *cache,
+                                      int selected, int *source_index_out) {
+    if (shelf_ui_cache_matches(nuxt, cache)) {
+        int source_index = -1;
+        cJSON *books = shelf_books(nuxt);
+
+        if (selected < 0) {
+            int article_index = -selected - 1;
+
+            if (article_index >= 0 && article_index < cache->article_count &&
+                cache->article_source_indices) {
+                source_index = cache->article_source_indices[article_index];
+            }
+        } else if (selected < cache->book_count && cache->book_source_indices) {
+            source_index = cache->book_source_indices[selected];
+        }
+        if (source_index_out) {
+            *source_index_out = source_index;
+        }
+        if (books && cJSON_IsArray(books) && source_index >= 0) {
+            return cJSON_GetArrayItem(books, source_index);
+        }
+        return NULL;
+    }
     if (selected < 0) {
         int article_index = -selected - 1;
 
@@ -63,11 +96,12 @@ int shelf_ui_cover_cache_index_with_counts(int article_count, int book_count, in
 
 int shelf_ui_cover_cache_index(cJSON *nuxt, int selected) {
     return shelf_ui_cover_cache_index_with_counts(
-        shelf_ui_article_count(nuxt), shelf_ui_normal_count(nuxt), selected);
+        shelf_article_count(nuxt), shelf_normal_book_count(nuxt), selected);
 }
 
-static cJSON *shelf_ui_selected_book(cJSON *nuxt, int selected) {
-    return shelf_ui_selected_entry(nuxt, selected, NULL);
+static cJSON *shelf_ui_selected_book(cJSON *nuxt, const ShelfCoverCache *cache,
+                                     int selected) {
+    return shelf_ui_selected_entry(nuxt, cache, selected, NULL);
 }
 
 static void shelf_cover_cache_trim(ShelfCoverCache *cache, int selected, float selected_pos,
@@ -240,8 +274,8 @@ void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_f
     SDL_Color ink = theme->ink;
     SDL_Color muted = theme->muted;
     SDL_Color line = theme->line;
-    int article_count = shelf_ui_article_count(nuxt);
-    int book_count = shelf_ui_normal_count(nuxt);
+    int article_count = shelf_ui_article_count(nuxt, cover_cache);
+    int book_count = shelf_ui_normal_count(nuxt, cover_cache);
     int total_count = article_count + book_count;
     int min_selected = article_count > 0 ? -article_count : 0;
     int content_top = header_h;
@@ -296,7 +330,7 @@ void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_f
 
     shelf_cover_cache_trim(cover_cache, selected, selected_pos, article_count, book_count,
                            UI_SHELF_COVER_TEXTURE_KEEP_RADIUS);
-    selected_book = shelf_ui_selected_book(nuxt, selected);
+    selected_book = shelf_ui_selected_book(nuxt, cover_cache, selected);
     selected_title = json_get_string(selected_book, "title");
     fit_text_ellipsis(title_font,
                       selected_title ? selected_title :
@@ -329,7 +363,7 @@ void render_shelf(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_f
         {
             int cache_index = shelf_ui_cover_cache_index_with_counts(
                 article_count, book_count, i);
-            cJSON *book = shelf_ui_selected_entry(nuxt, i, NULL);
+            cJSON *book = shelf_ui_selected_entry(nuxt, cover_cache, i, NULL);
             const char *title = json_get_string(book, "title");
 
             if (!book) {

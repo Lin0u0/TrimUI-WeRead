@@ -102,11 +102,25 @@ void ui_handle_opening_view_action(ApiContext *ctx, UiInputAction action,
         !atomic_load(&reader_open->running) &&
         !*reader_open_thread_handle &&
         reader_open->source_target[0]) {
+        char retry_target[2048];
+        char retry_book_id[256];
+        char retry_override[2048];
+        int retry_font_size = reader_open->font_size;
+        int retry_content_font_size = reader_open->content_font_size;
+        int retry_place_at_end = reader_open->place_at_end;
+        int retry_direct_open = reader_open->direct_open;
+
+        ui_copy_string(retry_target, sizeof(retry_target), reader_open->source_target);
+        ui_copy_string(retry_book_id, sizeof(retry_book_id), reader_open->book_id);
+        ui_copy_string(retry_override, sizeof(retry_override),
+                       reader_open->source_target_override);
         snprintf(status, status_size, "\xE6\xAD\xA3\xE5\x9C\xA8\xE9\x87\x8D\xE8\xAF\x95...");
         ui_reader_flow_begin_reader_open(ctx, reader_open, reader_open_thread_handle,
-                                         reader_open->source_target,
-                                         reader_open->book_id[0] ? reader_open->book_id : NULL,
-                                         reader_open->font_size);
+                                         retry_target,
+                                         retry_book_id[0] ? retry_book_id : NULL,
+                                         retry_font_size, retry_content_font_size,
+                                         retry_override[0] ? retry_override : NULL,
+                                         retry_place_at_end, retry_direct_open);
         ui_platform_haptic_pulse(haptic_state, UI_HAPTIC_CONFIRM_MS, 60);
     }
 }

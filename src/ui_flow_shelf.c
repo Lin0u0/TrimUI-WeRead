@@ -22,6 +22,7 @@ static int ui_shelf_flow_cover_download_thread(void *userdata) {
         state->failed = 1;
     }
     state->running = 0;
+    ui_runtime_signal_worker_done();
     return state->ready ? 0 : -1;
 }
 
@@ -48,7 +49,10 @@ void ui_shelf_flow_cover_download_maybe_start(ApiContext *ctx, cJSON *shelf_nuxt
         return;
     }
 
-    if (shelf_nuxt) {
+    if (cache->source_nuxt == shelf_nuxt) {
+        article_count = cache->article_count;
+        book_count = cache->book_count;
+    } else if (shelf_nuxt) {
         article_count = shelf_article_count(shelf_nuxt);
         book_count = shelf_normal_book_count(shelf_nuxt);
     } else {
@@ -112,6 +116,7 @@ void ui_shelf_flow_cover_download_maybe_start(ApiContext *ctx, cJSON *shelf_nuxt
                 state->failed = 1;
                 entry->attempted = 0;
                 entry->download_failed = 1;
+                ui_runtime_signal_worker_done();
             }
             return;
         }

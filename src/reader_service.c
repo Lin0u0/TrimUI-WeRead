@@ -130,10 +130,6 @@ int reader_service_prepare_open_document(ApiContext *ctx, const char *source_tar
 
     memset(result, 0, sizeof(*result));
     snprintf(result->source_target, sizeof(result->source_target), "%s", source_target);
-    fprintf(stderr,
-            "reader-service-open: begin source=%s bookIdHint=%s font=%d article=%d\n",
-            source_target, book_id_hint && *book_id_hint ? book_id_hint : "(null)",
-            font_size, source_is_article);
 
     if (!source_is_article &&
         book_id_hint && *book_id_hint &&
@@ -142,9 +138,6 @@ int reader_service_prepare_open_document(ApiContext *ctx, const char *source_tar
                                    NULL, &saved_content_font_size,
                                    &saved_page, &saved_offset) == 0) {
         has_local_position = 1;
-        fprintf(stderr,
-                "reader-service-open: local-position by source bookId=%s savedTarget=%s page=%d offset=%d font=%d\n",
-                book_id_hint, saved_target, saved_page, saved_offset, saved_content_font_size);
     }
     if (!has_local_position) {
         (void)preferences_state_load_reader_font_size(ctx, &saved_content_font_size);
@@ -154,16 +147,6 @@ int reader_service_prepare_open_document(ApiContext *ctx, const char *source_tar
         fprintf(stderr, "reader-service-open: load failed source=%s\n", source_target);
         goto cleanup;
     }
-    fprintf(stderr,
-            "reader-service-open: loaded kind=%s docTarget=%s bookId=%s chapterUid=%s chapterIdx=%d progressUid=%s progressIdx=%d savedOffset=%d\n",
-            doc.kind == READER_DOCUMENT_KIND_ARTICLE ? "article" : "book",
-            doc.target ? doc.target : "(null)",
-            doc.book_id ? doc.book_id : "(null)",
-            doc.chapter_uid ? doc.chapter_uid : "(null)",
-            doc.chapter_idx,
-            doc.progress_chapter_uid ? doc.progress_chapter_uid : "(null)",
-            doc.progress_chapter_idx,
-            doc.saved_chapter_offset);
 
     if (doc.kind == READER_DOCUMENT_KIND_ARTICLE) {
         has_local_position = 0;
@@ -172,11 +155,6 @@ int reader_service_prepare_open_document(ApiContext *ctx, const char *source_tar
         saved_content_font_size = 36;
         (void)preferences_state_load_reader_font_size(ctx, &saved_content_font_size);
         source_is_article = 1;
-        fprintf(stderr,
-                "reader-service-open: article document disables book position source=%s docTarget=%s font=%d\n",
-                source_target,
-                doc.target ? doc.target : "(null)",
-                saved_content_font_size);
     }
 
     {
@@ -197,7 +175,6 @@ int reader_service_prepare_open_document(ApiContext *ctx, const char *source_tar
         if (progress_target) {
             ReaderDocument progress_doc = {0};
 
-            fprintf(stderr, "reader-service-open: follow progress target=%s\n", progress_target);
             if (reader_service_load_document(ctx, progress_target, font_size, &progress_doc) != 0) {
                 fprintf(stderr, "reader-service-open: progress load failed target=%s\n",
                         progress_target);
@@ -222,11 +199,6 @@ int reader_service_prepare_open_document(ApiContext *ctx, const char *source_tar
         has_local_position = 1;
         snprintf(result->source_target, sizeof(result->source_target), "%s",
                  saved_source_target);
-        fprintf(stderr,
-                "reader-service-open: local-position by bookId bookId=%s savedSource=%s savedTarget=%s page=%d offset=%d font=%d\n",
-                doc.book_id ? doc.book_id : "(null)",
-                saved_source_target, saved_target, saved_page, saved_offset,
-                saved_content_font_size);
     }
 
     if (!has_cloud_position && has_local_position &&
@@ -277,18 +249,6 @@ int reader_service_prepare_open_document(ApiContext *ctx, const char *source_tar
     result->initial_page = initial_page;
     result->initial_offset = saved_offset;
     result->honor_saved_position = honor_saved_position;
-    fprintf(stderr,
-            "reader-service-open: ready source=%s finalSource=%s finalDocTarget=%s bookId=%s initialPage=%d initialOffset=%d honorSaved=%d contentFont=%d cloud=%d local=%d\n",
-            source_target,
-            result->source_target,
-            result->doc.target ? result->doc.target : "(null)",
-            result->doc.book_id ? result->doc.book_id : "(null)",
-            result->initial_page,
-            result->initial_offset,
-            result->honor_saved_position,
-            result->content_font_size,
-            has_cloud_position,
-            has_local_position);
     rc = 0;
 
 cleanup:

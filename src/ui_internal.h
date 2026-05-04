@@ -155,6 +155,11 @@ typedef struct {
 typedef struct {
     ShelfCoverEntry *entries;
     int count;
+    cJSON *source_nuxt;
+    int article_count;
+    int book_count;
+    int *article_source_indices;
+    int *book_source_indices;
     int last_trim_selected;
     int last_trim_visible_start;
     int last_trim_visible_end;
@@ -198,6 +203,10 @@ typedef struct {
     int progress_paused;
     int progress_initial_report_pending;
     int progress_session_expired;
+    int position_dirty;
+    Uint32 position_dirty_tick;
+    Uint32 position_last_save_tick;
+    int position_last_saved_page;
 } ReaderViewState;
 
 typedef struct {
@@ -210,6 +219,9 @@ typedef struct {
     int initial_page;
     int initial_offset;
     int honor_saved_position;
+    char source_target_override[2048];
+    int place_at_end;
+    int direct_open;
     atomic_int running;
     atomic_int ready;
     atomic_int failed;
@@ -319,6 +331,8 @@ enum {
     UI_FRAME_INTERVAL_READER_IDLE_MS = 180,
     UI_PROGRESS_REPORT_INTERVAL_MS = 30000,
     UI_PROGRESS_PAUSE_TIMEOUT_MS = 120000,
+    UI_READER_POSITION_SAVE_DEBOUNCE_MS = 5000,
+    UI_READER_POSITION_SAVE_PAGE_DELTA = 3,
     UI_CHAPTER_PREFETCH_RADIUS = 5,
     UI_CHAPTER_PREFETCH_MAX_RUNNING = 1,
     UI_TOAST_DURATION_MS = 3000,
@@ -326,6 +340,10 @@ enum {
     UI_VIEW_FADE_DURATION_MS = 320,
     UI_EXIT_CONFIRM_DURATION_MS = 1500,
     UI_BATTERY_POLL_INTERVAL_MS = 30000
+};
+
+enum {
+    UI_WORKER_EVENT_DONE = 0x57524431
 };
 
 #define UI_CATALOG_ANIMATION_SPEED 7.0f
@@ -640,6 +658,7 @@ void render_settings(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *bod
 void render_catalog_overlay(SDL_Renderer *renderer, TTF_Font *title_font, TTF_Font *body_font,
                             ReaderViewState *state, float progress, float selected_pos,
                             const UiLayout *layout);
+void ui_text_texture_cache_clear(void);
 
 /* ====================== ui_assets.c ====================== */
 
@@ -821,6 +840,7 @@ UiLayout ui_layout_for_rotation(UiRotation rotation);
 int ui_recreate_scene_texture(SDL_Renderer *renderer, SDL_Texture **scene_texture,
                               const UiLayout *layout);
 void ui_force_exit_from_login(UiHapticState *haptic_state);
+void ui_runtime_signal_worker_done(void);
 void ui_settings_clear_logout_confirm(SettingsFlowState *settings_state);
 const char *ui_logout_status_text(SessionLogoutOutcome outcome);
 void ui_transition_to_login_required(UiView *view, AuthSession *session, int *login_active,
@@ -865,6 +885,9 @@ int ui_reader_view_rewrap(TTF_Font *font, int content_width, int content_height,
 void ui_reader_view_set_source_target(ReaderViewState *state, const char *source_target);
 void ui_reader_view_clamp_current_page(ReaderViewState *state);
 void ui_reader_view_save_local_position(ApiContext *ctx, ReaderViewState *state);
+void ui_reader_view_mark_local_position_dirty(ReaderViewState *state);
+int ui_reader_view_save_local_position_if_due(ApiContext *ctx, ReaderViewState *state,
+                                              Uint32 now, int force);
 int ui_reader_view_current_page_offset(const ReaderViewState *state);
 int ui_reader_view_current_catalog_index(ReaderViewState *state);
 void ui_reader_view_build_page_summary(ReaderViewState *state, char *out, size_t out_size);
@@ -957,7 +980,9 @@ void ui_reader_view_mark_progress_session_expired(ReaderViewState *state);
 void ui_reader_flow_begin_reader_open(ApiContext *ctx, ReaderOpenState *reader_open,
                                       SDL_Thread **reader_open_thread_handle,
                                       const char *source_target, const char *book_id,
-                                      int font_size);
+                                      int font_size, int content_font_size,
+                                      const char *source_target_override,
+                                      int place_at_end, int direct_open);
 int ui_reader_flow_finish_open(ApiContext *ctx, TTF_Font *body_font,
                                ReaderOpenState *reader_open,
                                SDL_Thread **reader_open_thread_handle,

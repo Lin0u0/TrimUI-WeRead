@@ -280,15 +280,6 @@ static int ui_reader_view_init_from_document(TTF_Font *font, int content_width,
     if (!state) {
         return -1;
     }
-    fprintf(stderr,
-            "reader-view-init: begin target=%s kind=%s font=%d width=%d height=%d honorSaved=%d contentLen=%zu\n",
-            state->doc.target ? state->doc.target : "(null)",
-            state->doc.kind == READER_DOCUMENT_KIND_ARTICLE ? "article" : "book",
-            state->content_font_size > 0 ? state->content_font_size : UI_READER_CONTENT_FONT_SIZE,
-            content_width,
-            content_height,
-            honor_saved_position,
-            state->doc.content_text ? strlen(state->doc.content_text) : 0u);
     if (!state->doc.content_text || !state->doc.content_text[0]) {
         fprintf(stderr,
                 "reader-view-init: empty content target=%s\n",
@@ -330,14 +321,7 @@ static int ui_reader_view_init_from_document(TTF_Font *font, int content_width,
     }
     ui_reader_view_sync_catalog_selection(state);
     state->catalog_open = 0;
-    fprintf(stderr,
-            "reader-view-init: ready target=%s lines=%d pages=%d currentPage=%d lineHeight=%d linesPerPage=%d\n",
-            state->doc.target ? state->doc.target : "(null)",
-            state->line_count,
-            ui_reader_view_total_pages(state),
-            state->current_page,
-            state->line_height,
-            state->lines_per_page);
+    state->position_last_saved_page = state->current_page;
     return 0;
 }
 
@@ -437,6 +421,7 @@ void ui_reader_view_free(ReaderViewState *state) {
         }
     }
     if (state->content_font) {
+        ui_text_texture_cache_clear();
         TTF_CloseFont(state->content_font);
     }
     free(state->lines);
@@ -454,6 +439,7 @@ int ui_reader_view_reset_content_font(TTF_Font *fallback_font, ReaderViewState *
     }
 
     if (state->content_font) {
+        ui_text_texture_cache_clear();
         TTF_CloseFont(state->content_font);
         state->content_font = NULL;
     }
@@ -475,6 +461,7 @@ int ui_reader_view_reset_content_font(TTF_Font *fallback_font, ReaderViewState *
     }
 
     char_width_cache_reset();
+    ui_text_texture_cache_clear();
     return 0;
 }
 
@@ -488,13 +475,6 @@ int ui_reader_view_adopt_document(TTF_Font *font, ReaderDocument *doc,
 
     ui_reader_view_copy_fallback_font_path(fallback_font_path, sizeof(fallback_font_path), state);
 
-    fprintf(stderr,
-            "reader-view-adopt: begin docTarget=%s kind=%s contentLen=%zu preservedFont=%d existingLines=%d\n",
-            doc && doc->target ? doc->target : "(null)",
-            doc && doc->kind == READER_DOCUMENT_KIND_ARTICLE ? "article" : "book",
-            doc && doc->content_text ? strlen(doc->content_text) : 0u,
-            content_font_size,
-            state ? state->line_count : -1);
     if (!doc || !doc->content_text || !doc->target) {
         fprintf(stderr,
                 "reader-view-adopt: invalid document doc=%p target=%s content=%p\n",
@@ -513,11 +493,6 @@ int ui_reader_view_adopt_document(TTF_Font *font, ReaderDocument *doc,
     }
     ui_reader_view_free(state);
     *state = next_state;
-    fprintf(stderr,
-            "reader-view-adopt: success target=%s lines=%d currentPage=%d\n",
-            state->doc.target ? state->doc.target : "(null)",
-            state->line_count,
-            state->current_page);
     return 0;
 }
 
@@ -738,6 +713,51 @@ void ui_reader_view_save_local_position(ApiContext *ctx, ReaderViewState *state)
     reader_service_save_local_position(ctx, &state->doc, state->source_target,
                                        state->content_font_size, state->current_page,
                                        current_offset);
+    state->position_dirty = 0;
+    state->position_dirty_tick = 0;
+    state->position_last_save_tick = SDL_GetTicks();
+    state->position_last_saved_page = state->current_page;
+}
+
+void ui_reader_view_mark_local_position_dirty(ReaderViewState *state) {
+    Uint32 now;
+
+    if (!state) {
+        return;
+    }
+    ui_reader_view_clamp_current_page(state);
+    now = SDL_GetTicks();
+    if (!state->position_dirty) {
+        state->position_dirty_tick = now;
+    }
+    state->position_dirty = 1;
+}
+
+int ui_reader_view_save_local_position_if_due(ApiContext *ctx, ReaderViewState *state,
+                                              Uint32 now, int force) {
+    int page_delta;
+
+    if (!state) {
+        return 0;
+    }
+    if (force) {
+        ui_reader_view_save_local_position(ctx, state);
+        return 1;
+    }
+    if (!state->position_dirty) {
+        return 0;
+    }
+
+    page_delta = state->current_page - state->position_last_saved_page;
+    if (page_delta < 0) {
+        page_delta = -page_delta;
+    }
+    if (page_delta >= UI_READER_POSITION_SAVE_PAGE_DELTA ||
+        now - state->position_dirty_tick >= UI_READER_POSITION_SAVE_DEBOUNCE_MS) {
+        ui_reader_view_save_local_position(ctx, state);
+        return 1;
+    }
+    return 0;
 }
 
 void ui_reader_view_note_progress_activity(ReaderViewState *state, Uint32 now) {
@@ -820,45 +840,14 @@ void ui_reader_view_flush_progress_blocking(ApiContext *ctx, ReaderViewState *st
 
 void ui_reader_view_open_catalog(ApiContext *ctx, ReaderViewState *state,
                                  char *status, size_t status_size) {
-    int catalog_complete = 0;
-
     if (!state || !state->doc.catalog_items || state->doc.catalog_count <= 0) {
-        fprintf(stderr,
-                "reader-view-catalog-open: unavailable target=%s kind=%s count=%d items=%p\n",
-                state && state->doc.target ? state->doc.target : "(null)",
-                state && state->doc.kind == READER_DOCUMENT_KIND_ARTICLE ? "article" : "book",
-                state ? state->doc.catalog_count : -1,
-                state ? (void *)state->doc.catalog_items : NULL);
         if (status && status_size > 0) {
             status[0] = '\0';
         }
         return;
     }
 
-    if (ctx && state->doc.kind == READER_DOCUMENT_KIND_BOOK) {
-        catalog_complete = state->doc.catalog_total_count <= 0 ||
-            state->doc.catalog_count >= state->doc.catalog_total_count;
-        fprintf(stderr,
-                "reader-view-catalog-open: target=%s count=%d total=%d complete=%d chapterUid=%s chapterIdx=%d\n",
-                state->doc.target ? state->doc.target : "(null)",
-                state->doc.catalog_count,
-                state->doc.catalog_total_count,
-                catalog_complete,
-                state->doc.chapter_uid ? state->doc.chapter_uid : "(null)",
-                state->doc.chapter_idx);
-    } else {
-        catalog_complete = state->doc.catalog_total_count <= 0 ||
-            state->doc.catalog_count >= state->doc.catalog_total_count;
-        fprintf(stderr,
-                "reader-view-catalog-open: target=%s kind=article count=%d total=%d complete=%d chapterUid=%s chapterIdx=%d\n",
-                state->doc.target ? state->doc.target : "(null)",
-                state->doc.catalog_count,
-                state->doc.catalog_total_count,
-                catalog_complete,
-                state->doc.chapter_uid ? state->doc.chapter_uid : "(null)",
-                state->doc.chapter_idx);
-    }
-
+    (void)ctx;
     ui_reader_view_sync_catalog_selection(state);
     if (status && status_size > 0) {
         status[0] = '\0';

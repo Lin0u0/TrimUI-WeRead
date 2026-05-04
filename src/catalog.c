@@ -821,13 +821,6 @@ int reader_hydrate_full_catalog(ApiContext *ctx, ReaderDocument *doc) {
 
     qsort(doc->catalog_items, (size_t)doc->catalog_count, sizeof(*doc->catalog_items),
           catalog_item_cmp_chapter_idx);
-    fprintf(stderr,
-            "reader-catalog-hydrate: begin bookId=%s count=%d total=%d first=%d last=%d\n",
-            doc->book_id,
-            doc->catalog_count,
-            doc->catalog_total_count,
-            doc->catalog_items[0].chapter_idx,
-            doc->catalog_items[doc->catalog_count - 1].chapter_idx);
 
     while (pass++ < max_passes) {
         int added_total = 0;
@@ -862,14 +855,6 @@ int reader_hydrate_full_catalog(ApiContext *ctx, ReaderDocument *doc) {
         if (!doc->catalog_items || doc->catalog_count <= 0) {
             return -1;
         }
-        fprintf(stderr,
-                "reader-catalog-hydrate: pass=%d count=%d total=%d first=%d last=%d added=%d\n",
-                pass,
-                doc->catalog_count,
-                doc->catalog_total_count,
-                doc->catalog_items[0].chapter_idx,
-                doc->catalog_items[doc->catalog_count - 1].chapter_idx,
-                added_total);
         if (added_total <= 0) {
             break;
         }

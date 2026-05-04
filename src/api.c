@@ -143,10 +143,6 @@ static int api_get_ua_internal_with_retry(ApiContext *ctx, const char *url,
             long code;
             curl_easy_getinfo(ctx->curl, CURLINFO_RESPONSE_CODE, &code);
             if (code >= 200 && code < 400) {
-                if (elapsed_ms >= 1000) {
-                    fprintf(stderr, "GET %s ok in %ldms bytes=%zu attempt=%d\n",
-                            url, elapsed_ms, buf->size, attempt + 1);
-                }
                 return 0;
             }
             fprintf(stderr, "GET %s returned %ld in %ldms attempt=%d\n",
@@ -156,8 +152,6 @@ static int api_get_ua_internal_with_retry(ApiContext *ctx, const char *url,
         }
 
         if (allow_retry && attempt == 0 && is_transient_error(res)) {
-            fprintf(stderr, "GET %s transient %d in %ldms attempt=%d; retrying\n",
-                    url, (int)res, elapsed_ms, attempt + 1);
             api_buffer_free(buf);
             sleep(1);
             continue;

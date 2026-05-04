@@ -24,6 +24,7 @@ static int ui_startup_login_start_thread(void *userdata) {
         atomic_store(&state->failed, 1);
     }
     atomic_store(&state->running, 0);
+    ui_runtime_signal_worker_done();
     return atomic_load(&state->success) ? 0 : -1;
 }
 
@@ -40,6 +41,7 @@ static int ui_startup_login_poll_thread(void *userdata) {
         state->last_status = AUTH_POLL_ERROR;
     }
     atomic_store(&state->running, 0);
+    ui_runtime_signal_worker_done();
     return atomic_load(&state->completed) ? 0 : -1;
 }
 
@@ -57,6 +59,7 @@ static int ui_startup_login_startup_thread(void *userdata) {
     }
     atomic_store(&state->running, 0);
     atomic_store(&state->completed, 1);
+    ui_runtime_signal_worker_done();
     return state->session_ok == 1 ? 0 : -1;
 }
 
@@ -85,6 +88,7 @@ void ui_startup_login_begin_startup_refresh(ApiContext *ctx, StartupState *start
         atomic_store(&startup_state->running, 0);
         atomic_store(&startup_state->completed, 1);
         startup_state->session_ok = -1;
+        ui_runtime_signal_worker_done();
     }
 }
 
@@ -120,6 +124,7 @@ void ui_startup_login_begin_login_flow(ApiContext *ctx, LoginStartState *login_s
     if (!*login_thread) {
         atomic_store(&login_start->running, 0);
         atomic_store(&login_start->failed, 1);
+        ui_runtime_signal_worker_done();
         snprintf(status, status_size,
                  "\xE6\x97\xA0\xE6\xB3\x95\xE5\x88\x9B\xE5\xBB\xBA\xE7\x99\xBB\xE5\xBD\x95\xE7\xBA\xBF\xE7\xA8\x8B");
     }
@@ -158,6 +163,7 @@ int ui_startup_login_finish_login_start(ApiContext *ctx, LoginStartState *login_
         if (!*login_poll_thread_handle) {
             atomic_store(&login_poll->running, 0);
             *login_active = 0;
+            ui_runtime_signal_worker_done();
             snprintf(status, status_size,
                      "\xE6\x97\xA0\xE6\xB3\x95\xE5\x88\x9B\xE5\xBB\xBA\xE7\x99\xBB\xE5\xBD\x95\xE8\xBD\xAE\xE8\xAF\xA2\xE7\xBA\xBF\xE7\xA8\x8B");
         }

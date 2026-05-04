@@ -183,7 +183,8 @@ int ui_settings_apply(SettingsFlowState *settings_state, ApiContext *ctx,
             }
             ui_reader_view_rewrap(body_font, current_layout->reader_content_w,
                                   current_layout->reader_content_h, reader_state);
-            ui_reader_view_save_local_position(ctx, reader_state);
+            ui_reader_view_save_local_position_if_due(ctx, reader_state,
+                                                      SDL_GetTicks(), 1);
         }
         snprintf(status, status_size, "Font size %d", next_font_size);
         return 1;

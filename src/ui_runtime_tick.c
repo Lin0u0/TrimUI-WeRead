@@ -115,6 +115,8 @@ void ui_runtime_tick_after_input(UiRuntime *runtime, ApiContext *ctx,
                                        &runtime->chapter_prefetch_cache,
                                        &runtime->catalog_hydration,
                                        &runtime->catalog_hydration_thread_handle);
+        (void)ui_reader_view_save_local_position_if_due(
+            ctx, &runtime->reader_state, now, 0);
     } else if (ui_reader_flow_chapter_prefetch_has_running_work(
                    &runtime->chapter_prefetch_cache) ||
                ui_reader_flow_catalog_hydration_has_running_work(
@@ -125,11 +127,16 @@ void ui_runtime_tick_after_input(UiRuntime *runtime, ApiContext *ctx,
                                        &runtime->catalog_hydration_thread_handle,
                                        &runtime->reader_state);
     }
+    if (runtime->view != VIEW_READER && runtime->reader_state.position_dirty) {
+        (void)ui_reader_view_save_local_position_if_due(
+            ctx, &runtime->reader_state, now, 0);
+    }
     if (runtime->reader_state.progress_session_expired &&
         runtime->view != VIEW_LOGIN &&
         runtime->view != VIEW_BOOTSTRAP &&
         runtime->view != VIEW_OPENING) {
-        ui_reader_view_save_local_position(ctx, &runtime->reader_state);
+        ui_reader_view_save_local_position_if_due(ctx, &runtime->reader_state,
+                                                  now, 1);
         runtime->shelf_status[0] = '\0';
         ui_transition_to_login_required(
             &runtime->view, &runtime->session, &runtime->login_active,
