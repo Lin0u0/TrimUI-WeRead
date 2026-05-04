@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.11
+
+`0.1.11` focuses on keeping the TrimUI device quiet, responsive, and lower power during normal reading. The default runtime no longer writes high-volume success-path traces, and several hot paths now avoid repeated work while pages, shelf cards, and background workers are idle.
+
+### Highlights
+
+- Removed normal success-path debug logging from reader open/load/adopt, shelf open, catalog hydration/toggle, prefetch, and successful network retry paths while keeping actionable failure diagnostics
+- Added an LRU text texture cache so repeated UI labels and reader text draw paths avoid recreating the same SDL textures frame after frame
+- Throttled local reader-position persistence so ordinary page turns mark state dirty and save only on debounce, page-distance, exit, lock, or settings boundaries
+- Switched background worker completion to post an SDL user event, letting the main loop sleep longer and wake promptly when reader open, prefetch, catalog hydration, cover download, or login work finishes
+- Moved missing-prefetch adjacent chapter opens out of the input handler and into the existing reader-open worker path, avoiding synchronous network or I/O stalls during page navigation
+- Cached shelf article/book source indexes alongside the cover cache so shelf rendering, cover warmup/download, and navigation do not rescan the shelf JSON on every frame
+
+### Notes
+
+The release is intentionally conservative: it does not add a default profiling switch or more always-on diagnostics. Normal reading, paging, catalog browsing, and shelf use should stay much quieter in `WeRead.txt`, while weak-network, parser, font, QR, hardware, and progress-report failures still leave a useful error line.
+
 ## 0.1.10
 
 `0.1.10` is a maintenance-heavy release that breaks up the large reader and UI surfaces, tightens fragile WeRead parsing paths, and adds stronger release-package checks before shipping.
