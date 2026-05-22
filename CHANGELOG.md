@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.12
+
+`0.1.12` fixes a NextUI launcher edge case where opening WeRead through Shortcuts could use the wrong data directory and appear logged out even though launching from Tools kept the existing session.
+
+### Highlights
+
+- Resolved the NextUI package directory to an absolute path before deriving the app name, so both direct Tools launches and Shortcuts bridge launches use `$SHARED_USERDATA_PATH/WeRead`
+- Added launcher defaults for `SHARED_USERDATA_PATH`, `LOGS_PATH`, and `PLATFORM` so manual and bridge-style starts still land on the same data and log roots
+- Added deterministic launcher smoke coverage for both absolute and relative `./launch.sh` entry paths, including a guard against the old `..txt` log artifact
+- Wired the new NextUI launcher smoke into the documented release gates and CI workflow
+
+### Notes
+
+This release is narrowly focused on launch consistency. Existing login cookies and reader state under `.userdata/shared/WeRead` are reused from both entry points; stale files accidentally written under `.userdata/shared` by the old shortcut path are left untouched.
+
 ## 0.1.11
 
 `0.1.11` focuses on keeping the TrimUI device quiet, responsive, and lower power during normal reading. The default runtime no longer writes high-volume success-path traces, and several hot paths now avoid repeated work while pages, shelf cards, and background workers are idle.

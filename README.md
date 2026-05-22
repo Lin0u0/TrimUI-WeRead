@@ -187,6 +187,7 @@ Required host gates:
 
 Package and launcher checks:
 
+- `make test-nextui-launch-smoke`
 - `make test-package-audit-smoke`
 - `make package-audit-all`
 

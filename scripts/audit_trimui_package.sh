@@ -132,7 +132,12 @@ main() {
     require_file "$tmpdir" "Tools/tg5040/.media/WeRead.png"
     require_executable "$launch_path" "Tools/tg5040/WeRead.pak/launch.sh"
     require_executable "$binary_path" "Tools/tg5040/WeRead.pak/bin/tg5040/weread"
+    require_text "$launch_path" 'PAK_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)'
+    require_text "$launch_path" ': "${SHARED_USERDATA_PATH:=/mnt/SDCARD/.userdata/shared}"'
+    require_text "$launch_path" ': "${LOGS_PATH:=/mnt/SDCARD/.userdata/tg5040/logs}"'
+    require_text "$launch_path" ': "${PLATFORM:=tg5040}"'
     require_text "$launch_path" 'HOME="$SHARED_USERDATA_PATH/$PAK_NAME"'
+    require_text "$launch_path" 'mkdir -p "$HOME" "$LOGS_PATH"'
     require_text "$launch_path" 'PATH="$PAK_DIR/bin/$PLATFORM:$PAK_DIR/bin:$PATH"'
     require_text "$launch_path" 'LD_LIBRARY_PATH="$PAK_DIR/lib/$PLATFORM:$LD_LIBRARY_PATH"'
     require_text "$launch_path" 'CURL_CA_BUNDLE="$PAK_DIR/res/cacert.pem"'

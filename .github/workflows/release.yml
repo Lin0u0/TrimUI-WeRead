@@ -50,6 +50,9 @@ jobs:
       - name: Run host CLI smoke
         run: make test-smoke
 
+      - name: Run NextUI launcher smoke
+        run: make test-nextui-launch-smoke
+
       - name: Run package audit smoke
         run: make test-package-audit-smoke
 

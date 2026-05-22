@@ -1,9 +1,14 @@
 #!/bin/sh
-PAK_DIR="$(dirname "$0")"
+PAK_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
 PAK_NAME="$(basename "$PAK_DIR" .pak)"
 
+: "${SHARED_USERDATA_PATH:=/mnt/SDCARD/.userdata/shared}"
+: "${LOGS_PATH:=/mnt/SDCARD/.userdata/tg5040/logs}"
+: "${PLATFORM:=tg5040}"
+export SHARED_USERDATA_PATH LOGS_PATH PLATFORM
+
 export HOME="$SHARED_USERDATA_PATH/$PAK_NAME"
-mkdir -p "$HOME"
+mkdir -p "$HOME" "$LOGS_PATH"
 
 export PATH="$PAK_DIR/bin/$PLATFORM:$PAK_DIR/bin:$PATH"
 export LD_LIBRARY_PATH="$PAK_DIR/lib/$PLATFORM:$LD_LIBRARY_PATH"

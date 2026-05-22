@@ -129,7 +129,8 @@ HOST_CFLAGS += -MMD -MP
 	doctor-release doctor-nextui doctor-stock doctor-crossmix \
 	package package-tg5040 package-nextui package-stock package-crossmix package-all \
 	package-audit-nextui package-audit-stock package-audit-crossmix package-audit-all \
-	nextui-release stock-release crossmix-release print-config test-host test-smoke test-package-audit-smoke
+	nextui-release stock-release crossmix-release print-config test-host test-smoke \
+	test-nextui-launch-smoke test-package-audit-smoke
 
 all: $(TARGET_PATH)
 
@@ -155,6 +156,7 @@ help:
 	@printf '%s\n' '  make tg5040             Build the tg5040 binary only'
 	@printf '%s\n' '  make test-host          Build and run host-native C verification binaries'
 	@printf '%s\n' '  make test-smoke         Run thin host-native CLI smoke checks only'
+	@printf '%s\n' '  make test-nextui-launch-smoke Verify NextUI launcher data root for absolute and relative paths'
 	@printf '%s\n' '  make test-package-audit-smoke Run deterministic smoke coverage for the package audit helper and exec bits'
 	@printf '%s\n' '  make doctor-release     Verify tg5040 release prerequisites before packaging'
 	@printf '%s\n' '  make print-config       Print resolved build configuration'
@@ -200,6 +202,9 @@ test-host: $(HOST_TEST_BINS)
 
 test-smoke: $(HOST_APP_PATH)
 	@sh tests/smoke/cli_smoke.sh "$(HOST_APP_PATH)"
+
+test-nextui-launch-smoke:
+	@bash tests/smoke/nextui_launch_path_smoke.sh
 
 test-package-audit-smoke:
 	@bash tests/smoke/package_audit_smoke.sh

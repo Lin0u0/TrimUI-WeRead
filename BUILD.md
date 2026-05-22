@@ -72,6 +72,7 @@ CLI host gates:
 
 Package and launcher gates:
 
+- `make test-nextui-launch-smoke`
 - `make test-package-audit-smoke`
 - `make package-all`
 - `make package-audit-all`
@@ -86,9 +87,10 @@ Recommended Phase 05 sign-off flow:
 1. Run `make doctor-release`
 2. Run `make test-host`
 3. Run `make test-smoke`
-4. Run `make test-package-audit-smoke`
-5. Run `make package-all`
-6. Run `make package-audit-all`
-7. Run optional real-device smoke on tg5040 hardware before tagging
+4. Run `make test-nextui-launch-smoke`
+5. Run `make test-package-audit-smoke`
+6. Run `make package-all`
+7. Run `make package-audit-all`
+8. Run optional real-device smoke on tg5040 hardware before tagging
 
 GitHub Actions `workflow_dispatch` now runs the same release verification sequence without publishing a tag, while tag pushes still publish the release artifacts after the same hard gates pass.

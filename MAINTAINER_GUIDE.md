@@ -88,6 +88,7 @@ Host gates:
 
 Package and launcher gates:
 
+- `make test-nextui-launch-smoke`
 - `make test-package-audit-smoke`
 - `make package-audit-all`
 

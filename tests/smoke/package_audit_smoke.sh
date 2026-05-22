@@ -22,7 +22,13 @@ make_tree() {
 
   cat >"$tree_root/Tools/tg5040/WeRead.pak/launch.sh" <<'EOF'
 #!/bin/sh
-HOME="$SHARED_USERDATA_PATH/$PAK_NAME"
+PAK_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
+PAK_NAME="$(basename "$PAK_DIR" .pak)"
+: "${SHARED_USERDATA_PATH:=/mnt/SDCARD/.userdata/shared}"
+: "${LOGS_PATH:=/mnt/SDCARD/.userdata/tg5040/logs}"
+: "${PLATFORM:=tg5040}"
+export HOME="$SHARED_USERDATA_PATH/$PAK_NAME"
+mkdir -p "$HOME" "$LOGS_PATH"
 PATH="$PAK_DIR/bin/$PLATFORM:$PAK_DIR/bin:$PATH"
 LD_LIBRARY_PATH="$PAK_DIR/lib/$PLATFORM:$LD_LIBRARY_PATH"
 CURL_CA_BUNDLE="$PAK_DIR/res/cacert.pem"
